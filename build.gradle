@@ -1,0 +1,81 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'net.neoforged.moddev' version '2.0.147'
+    id 'idea'
+}
+
+version = project.mod_version
+group = project.mod_group_id
+
+base {
+    archivesName = project.mod_id
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+
+neoForge {
+    version = project.neo_version
+    runs {
+        client { client() }
+        server { server(); programArgument '--nogui' }
+        data { data() }
+    }
+    mods {
+        "malanguagelearning" { sourceSet sourceSets.main }
+    }
+}
+
+// Expand ${mod_id} and friends into the mod metadata. Only the toml is expanded: the
+// Groovy template engine treats any "${...}" as an expression, which would explode on
+// language files and Python sources that legitimately contain such text.
+def metadataProps = [
+        mod_id                : project.mod_id,
+        mod_name              : project.mod_name,
+        mod_version           : project.mod_version,
+        mod_group_id          : project.mod_group_id,
+        mod_authors           : project.mod_authors,
+        mod_license           : project.mod_license,
+        mod_description       : project.mod_description,
+        minecraft_version     : project.minecraft_version,
+        minecraft_version_range: project.minecraft_version_range,
+        neo_version           : project.neo_version,
+        neo_version_range     : project.neo_version_range,
+]
+
+processResources {
+    inputs.properties(metadataProps)
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand metadataProps
+    }
+}
+
+// Bundle the Python sidecar (and its manifest) into the jar so the mod can provision
+// itself on first run with no manual setup.
+tasks.register('packageSidecar', Exec) {
+    group = 'build'
+    description = 'Copies the Python sidecar into resources and writes sidecar-manifest.txt'
+    workingDir = rootProject.projectDir
+    commandLine 'python3', 'scripts/package-sidecar.py'
+    outputs.file(layout.projectDirectory.file('src/main/resources/sidecar-manifest.txt'))
+    outputs.dir(layout.projectDirectory.dir('src/main/resources/assets/malanguagelearning/sidecar'))
+    doFirst {
+        logger.lifecycle("Packaging Python sidecar into mod resources")
+    }
+    // A missing python3 must not break the Java build; the mod degrades to "engine unavailable".
+    ignoreExitValue = true
+}
+
+tasks.named('processResources') {
+    dependsOn 'packageSidecar'
+}
+
+// The jar should carry a stable, readable name for Modrinth uploads.
+tasks.named('jar') {
+    archiveFileName = "${project.mod_id}-${project.version}.jar"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 25
+}

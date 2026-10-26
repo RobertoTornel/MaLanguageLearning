@@ -1,0 +1,35 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.eclipse/
+.settings/
+.classpath
+.project
+
+# Minecraft run dirs
+run/
+run-data/
+runs/
+
+# Python sidecar
+sidecar/.venv/
+sidecar/venv/
+sidecar/**/__pycache__/
+sidecar/**/*.pyc
+sidecar/.pytest_cache/
+sidecar/*.egg-info/
+
+# Local models / caches
+models/
+*.onnx
+*.onnx.data
+
+# OS
+.DS_Store
+Thumbs.db
