@@ -17,12 +17,40 @@ java.toolchain.languageVersion = JavaLanguageVersion.of(25)
 neoForge {
     version = project.neo_version
     runs {
-        client { client() }
+        client {
+            client()
+            // Capped at 2 GB so the dev client is tested under the same memory pressure a
+            // normal machine has, instead of the studio default which hides leaks.
+            jvmArgument '-Xmx2G'
+            jvmArgument '-Xms512M'
+        }
         server { server(); programArgument '--nogui' }
         data { data() }
     }
     mods {
         "malanguagelearning" { sourceSet sourceSets.main }
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Gson and slf4j come from the Minecraft runtime at play time, so the test classpath
+    // has to supply them explicitly.
+    testImplementation 'com.google.code.gson:gson:2.11.0'
+    testImplementation 'org.slf4j:slf4j-api:2.0.16'
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat = 'full'
     }
 }
 

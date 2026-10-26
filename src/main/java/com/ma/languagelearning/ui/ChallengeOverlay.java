@@ -3,21 +3,22 @@ package com.ma.languagelearning.ui;
 import com.ma.languagelearning.MaLanguageLearning;
 import com.ma.languagelearning.config.MllConfig;
 import com.ma.languagelearning.game.ChallengeManager;
+import com.ma.languagelearning.game.ChallengeOutcome;
 import com.ma.languagelearning.speech.WordPair;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-import net.neoforged.api.distmarker.Dist;
-import net.neoforged.api.distmarker.OnlyIn;
+import net.minecraft.world.item.ItemStack;
 
 /**
  * Draws the learning popup over the HUD: the word in the primary script, the secondary
  * script underneath, the phonetic reading, and the countdown.
  */
-@OnlyIn(Dist.CLIENT)
 public final class ChallengeOverlay {
 
     private static final int PANEL_WIDTH = 260;
+    /** Item icons are 16x16 logical pixels in Minecraft's GUI scale. */
+    private static final int ICON_SIZE = 16;
     private static final int PAD = 10;
 
     private ChallengeOverlay() {
@@ -72,8 +73,13 @@ public final class ChallengeOverlay {
         contentW = Math.max(contentW, font.width(header) + font.width(timerText) + 12);
         contentW = Math.min(contentW, PANEL_WIDTH - PAD * 2);
 
+        ItemStack icon = mgr.currentStack();
+        boolean showIcon = !icon.isEmpty();
+        // The icon sits above the word, centred, with a little breathing room.
+        int iconBlock = showIcon ? ICON_SIZE + 6 : 0;
+
         int panelW = Math.max(140, contentW + PAD * 2);
-        int panelH = PAD + smallHeight + 4 + wordHeight + 3
+        int panelH = iconBlock + PAD + smallHeight + 4 + wordHeight + 3
                 + (secondary.isBlank() ? 0 : smallHeight + 2)
                 + (wantPhonetic ? smallHeight + 2 : 0)
                 + 10;
@@ -81,9 +87,22 @@ public final class ChallengeOverlay {
         int x = (screenW - panelW) / 2;
         int y = (int) (screenH * 0.30);
 
+        // ---- result tint ----------------------------------------------------
+        // On a pass the whole panel goes green for a beat, which reads instantly even
+        // without looking at the text. The alpha fades out over the hold so it does not
+        // vanish abruptly.
+        boolean passed = mgr.currentOutcome() == ChallengeOutcome.PASSED && !mgr.isSkipped();
+        boolean failed = mgr.currentOutcome() == ChallengeOutcome.FAILED;
+        int panelColor = 0xD0181220;
+        if (passed) {
+            panelColor = 0xE0143A22;
+        } else if (failed) {
+            panelColor = 0xE03A1414;
+        }
+
         // ---- panel background ----------------------------------------------
-        g.fill(x, y, x + panelW, y + panelH, 0xD0181220);
-        int border = urgent ? 0xFFFF4545 : 0xFF7A5CC4;
+        g.fill(x, y, x + panelW, y + panelH, panelColor);
+        int border = passed ? 0xFF5BE07A : (failed ? 0xFFFF4545 : (urgent ? 0xFFFF4545 : 0xFF7A5CC4));
         g.fill(x, y, x + panelW, y + 1, border);
         g.fill(x, y + panelH - 1, x + panelW, y + panelH, border);
         g.fill(x, y, x + 1, y + panelH, border);
@@ -97,6 +116,13 @@ public final class ChallengeOverlay {
         int timerColor = urgent ? 0xFFFF6060 : 0xFF8FE3A0;
         g.text(font, timerText, x + panelW - PAD - font.width(timerText), cy, timerColor, false);
         cy += smallHeight + 4;
+
+        // ---- item icon ------------------------------------------------------
+        if (showIcon) {
+            // 26.3 renders items through the same extractor that draws the rest of the GUI.
+            g.item(icon, cx - ICON_SIZE / 2, cy);
+            cy += iconBlock;
+        }
 
         // ---- primary word ---------------------------------------------------
         g.centeredText(font, word, cx, cy, 0xFFFFFFFF);

@@ -27,7 +27,7 @@ public final class MllConfig {
 
     // ---- script presentation ------------------------------------------------
     /** Script used for the PRIMARY line, e.g. {@code "hiragana"}, {@code "kanji"}, {@code "romaji"}. */
-    public String primaryScript = "kana";
+    public String primaryScript = "hiragana";
     /** Script used for the SECONDARY line, e.g. {@code "romaji"}, {@code "ipa"}. */
     public String secondaryScript = "romaji";
     /** Show IPA/phonetic transcription under the word. */
@@ -42,6 +42,47 @@ public final class MllConfig {
     public boolean speakWordOnFailure = true;
     /** Only require words for items the player has never said before. */
     public boolean learnOncePerItem = true;
+    /** Play a chime on a pass and a softer tone on a fail. */
+    public boolean resultSounds = true;
+    /**
+     * Quiet gap between two challenges, in seconds.
+     *
+     * <p>Picking up a stack of blocks produces several new items at once. Without a pause
+     * they chain back to back and the player is stuck answering for minutes, so this puts
+     * breathing room between prompts.</p>
+     */
+    public int globalCooldownSeconds = 4;
+    /**
+     * How long before the same item may be asked again, in seconds.
+     *
+     * <p>Stops one item from monopolising the flow when it is picked up repeatedly, which
+     * is what made a burst of stone feel like the mod was stuck in a loop.</p>
+     */
+    public int itemCooldownSeconds = 90;
+    /**
+     * Minimum speech-recognition confidence for a pass, 0..1.
+     *
+     * <p>Measured on real parakeet-v3 output, a correctly spoken short word lands around
+     * 0.4-0.9 depending on length and clarity — "dirt" scored 0.40 while "apple" scored
+     * 0.99. A blanket 0.92 therefore rejects most honest answers, so the default is
+     * lenient and the exact word match does the real work. Raise it for stricter marking.</p>
+     */
+    public float minConfidence = 0.55f;
+    /** Reject a match when the transcript is this much longer than the target word. */
+    public boolean strictMatching = false;
+    /**
+     * How learned words are remembered.
+     *
+     * <ul>
+     *   <li>{@code "permanent"} — once learned, never asked again (the old behaviour).</li>
+     *   <li>{@code "off"} — nothing is remembered; every pickup asks again.</li>
+     *   <li>{@code "dynamic"} — remembered, but forgotten after {@link #memoryResetMinutes}
+     *       so previously learned words come back for review.</li>
+     * </ul>
+     */
+    public String memoryMode = "dynamic";
+    /** Minutes a learned word is remembered in {@code "dynamic"} mode. */
+    public int memoryResetMinutes = 30;
     /** Ignore items whose names are shorter than this (avoids one-letter noise). */
     public int minWordLength = 2;
     /** Item registry ids that are always exempt (e.g. {@code "minecraft:stone"}). */

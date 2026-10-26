@@ -4,15 +4,12 @@ import com.ma.languagelearning.MaLanguageLearning;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.resources.Identifier;
-import net.neoforged.api.distmarker.Dist;
-import net.neoforged.api.distmarker.OnlyIn;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 
 /**
  * Key bindings. One key opens the settings screen; another lets the player re-record the
  * current word if their microphone was noisy.
  */
-@OnlyIn(Dist.CLIENT)
 public final class KeyMappings {
 
     public static final KeyMapping.Category CATEGORY =

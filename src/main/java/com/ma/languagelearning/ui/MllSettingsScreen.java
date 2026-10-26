@@ -8,8 +8,6 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
-import net.neoforged.api.distmarker.Dist;
-import net.neoforged.api.distmarker.OnlyIn;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -18,7 +16,6 @@ import java.util.List;
  * Settings screen: target language, the two translation slots, script choice, phonetics,
  * timers, drop behaviour and the CPU/GPU device toggle.
  */
-@OnlyIn(Dist.CLIENT)
 public final class MllSettingsScreen extends Screen {
 
     private final Screen parent;
@@ -153,6 +150,52 @@ public final class MllSettingsScreen extends Screen {
                 .create(x0 + half + gap, y, half, 20, Component.literal("Answer time"),
                         (btn, value) -> {
                             cfg.answerSeconds = value;
+                            cfg.save();
+                        }));
+
+        y += rowH;
+
+        // Pause between challenges, and how long before the same item is asked again.
+        this.addRenderableWidget(CycleButton.<Integer>builder(
+                        v -> Component.literal(v + "s gap"),
+                        cfg.globalCooldownSeconds)
+                .withValues(0, 2, 4, 8, 15, 30)
+                .create(x0, y, half, 20, Component.literal("Between prompts"),
+                        (btn, value) -> {
+                            cfg.globalCooldownSeconds = value;
+                            cfg.save();
+                        }));
+
+        this.addRenderableWidget(CycleButton.<Integer>builder(
+                        v -> Component.literal(v == 0 ? "off" : v + "s"),
+                        cfg.itemCooldownSeconds)
+                .withValues(0, 30, 60, 90, 180, 300)
+                .create(x0 + half + gap, y, half, 20, Component.literal("Per item"),
+                        (btn, value) -> {
+                            cfg.itemCooldownSeconds = value;
+                            cfg.save();
+                        }));
+
+        y += rowH;
+
+        // How learned words are remembered.
+        this.addRenderableWidget(CycleButton.<String>builder(
+                        v -> Component.literal(cap(v)),
+                        cfg.memoryMode == null ? "dynamic" : cfg.memoryMode)
+                .withValues("dynamic", "permanent", "off")
+                .create(x0, y, half, 20, Component.literal("Memory"),
+                        (btn, value) -> {
+                            cfg.memoryMode = value;
+                            cfg.save();
+                        }));
+
+        this.addRenderableWidget(CycleButton.<Integer>builder(
+                        v -> Component.literal(v + " min"),
+                        cfg.memoryResetMinutes)
+                .withValues(10, 30, 60, 120, 360, 1440)
+                .create(x0 + half + gap, y, half, 20, Component.literal("Remember for"),
+                        (btn, value) -> {
+                            cfg.memoryResetMinutes = value;
                             cfg.save();
                         }));
 

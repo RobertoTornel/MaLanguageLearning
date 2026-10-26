@@ -143,9 +143,22 @@ public final class SidecarProvisioner {
             int port = cfg.sidecarPort;
 
             if (isSidecarHealthy()) {
-                LOG.info("[{}] a sidecar already answers on port {}; not starting another",
+                // A sidecar left over from a previous run is reused, but only if it is the
+                // build we just unpacked. Without this check an old process kept serving
+                // stale code and asset choices forever, so updating the mod appeared to do
+                // nothing until the machine was rebooted.
+                String running = sidecarFingerprint();
+                String packaged = packagedFingerprint();
+                boolean sameBuild = running == null || packaged == null || running.equals(packaged);
+                if (sameBuild) {
+                    LOG.info("[{}] a matching sidecar already answers on port {}; reusing it",
+                            "malanguagelearning", port);
+                    return null;
+                }
+                LOG.info("[{}] port {} is served by an older sidecar; replacing it",
                         "malanguagelearning", port);
-                return null;
+                stopSidecar();
+                sleepQuietly(1200);
             }
 
             try {
@@ -224,6 +237,55 @@ public final class SidecarProvisioner {
     }
 
     /** True when the sidecar answers {@code GET /health} with a 2xx. */
+    /**
+     * Fingerprint of the sidecar the running server reports, or null when it does not
+     * report one (older builds simply had no such field, so we treat it as matching).
+     */
+    private String sidecarFingerprint() {
+        try {
+            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+                    .connectTimeout(java.time.Duration.ofSeconds(2)).build();
+            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create("http://127.0.0.1:" + MllConfig.get().sidecarPort + "/health"))
+                    .timeout(java.time.Duration.ofSeconds(3)).GET().build();
+            java.net.http.HttpResponse<String> response =
+                    client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() != 200) {
+                return null;
+            }
+            com.google.gson.JsonElement root =
+                    com.google.gson.JsonParser.parseString(response.body());
+            if (root == null || !root.isJsonObject()) {
+                return null;
+            }
+            com.google.gson.JsonElement build = root.getAsJsonObject().get("build");
+            return build == null || build.isJsonNull() ? null : build.getAsString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Fingerprint of the sidecar shipped in this jar. */
+    private String packagedFingerprint() {
+        try (java.io.InputStream in = getClass().getResourceAsStream(
+                "/assets/malanguagelearning/sidecar/malanguage_server/build_id.txt")) {
+            if (in == null) {
+                return null;
+            }
+            return new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).trim();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     public boolean isSidecarHealthy() {
         int port = MllConfig.get().sidecarPort;
         try {
@@ -276,7 +338,13 @@ public final class SidecarProvisioner {
             }
 
             report(ProvisionProgress.Stage.INSTALLING_DEPS, "installing speech engine dependencies", 70);
-            runUv(uv, "pip", "install", "--python", python.toString(), "-e", sidecarDir.toString());
+            // Install with the [full] extra. The bare install only covers the 25 European
+            // languages parakeet handles; Japanese, Chinese, Korean and the rest need Whisper
+            // as a speech engine, and Japanese speech output needs its own phonemizer. Without
+            // the extra those languages install "successfully" and then simply cannot listen,
+            // which looked like the microphone being broken.
+            runUv(uv, "pip", "install", "--python", python.toString(),
+                    "-e", sidecarDir + "[full]");
 
             Files.writeString(mark, "ok\n", StandardCharsets.UTF_8);
             report(ProvisionProgress.Stage.READY, "engine ready", 100);

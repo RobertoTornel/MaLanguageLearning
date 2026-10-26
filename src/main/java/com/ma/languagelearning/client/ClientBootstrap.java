@@ -9,6 +9,7 @@ import com.ma.languagelearning.game.ChallengeManager;
 import com.ma.languagelearning.game.ItemNameResolver;
 import com.ma.languagelearning.game.LedgerStore;
 import com.ma.languagelearning.net.SidecarClient;
+import com.ma.languagelearning.net.ProvisionProgress;
 import com.ma.languagelearning.net.SidecarProvisioner;
 import com.ma.languagelearning.speech.SttClient;
 import com.ma.languagelearning.speech.TranslationProvider;
@@ -17,8 +18,6 @@ import com.ma.languagelearning.ui.ConsentScreen;
 import com.ma.languagelearning.ui.MllSettingsScreen;
 import net.minecraft.client.Minecraft;
 import net.minecraft.resources.Identifier;
-import net.neoforged.api.distmarker.Dist;
-import net.neoforged.api.distmarker.OnlyIn;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterGuiLayersEvent;
@@ -30,7 +29,6 @@ import net.neoforged.neoforge.common.NeoForge;
  * Client-side wiring. Owns the singletons and translates game events into calls on the
  * challenge manager.
  */
-@OnlyIn(Dist.CLIENT)
 public final class ClientBootstrap {
 
     private static final Identifier LAYER_ID =
@@ -45,6 +43,10 @@ public final class ClientBootstrap {
     private static AcquisitionTracker tracker;
     private static SidecarProvisioner provisioner;
     private static boolean initialised;
+    /** Ticks elapsed since the client starting; paces the automatic install kick-off. */
+    private static int startupTicks;
+    /** How long to wait after startup before provisioning, so the menu draws first. */
+    private static final int STARTUP_INSTALL_DELAY_TICKS = 40;
 
     private ClientBootstrap() {
     }
@@ -81,9 +83,6 @@ public final class ClientBootstrap {
             tracker = new AcquisitionTracker(resolver, ledger);
 
             provisioner = new SidecarProvisioner();
-            if (cfg.consentAccepted) {
-                provisioner.ensureReady();
-            }
 
             initialised = true;
             MaLanguageLearning.LOGGER.info("[{}] engine ready", MaLanguageLearning.MODID);
@@ -100,6 +99,43 @@ public final class ClientBootstrap {
     public static SidecarProvisioner provisioner() {
         ensureInitialised();
         return provisioner;
+    }
+
+    /**
+     * Start provisioning the speech engine, from the consent screen.
+     *
+     * <p>Called the moment the player accepts, so the download begins while they are still
+     * reading the screen rather than on first use. Safe to call repeatedly.</p>
+     */
+    public static void startInstall() {
+        ensureInitialised();
+        if (provisioner == null) {
+            return;
+        }
+        // Provision first, then start the process. Previously only the first half ran,
+        // so the engine installed itself perfectly and was never launched: the mod sat
+        // there with a working venv and nothing listening on the port.
+        provisioner.ensureReady().whenComplete((ignored, error) -> {
+            if (error != null) {
+                MaLanguageLearning.LOGGER.warn("[{}] speech engine install failed: {}",
+                        MaLanguageLearning.MODID, error.getMessage());
+                return;
+            }
+            try {
+                provisioner.startSidecar();
+            } catch (Exception e) {
+                MaLanguageLearning.LOGGER.warn("[{}] could not start the speech engine",
+                        MaLanguageLearning.MODID, e);
+            }
+        });
+    }
+
+    /** Current installer progress for the consent screen, never null. */
+    public static ProvisionProgress progress() {
+        if (provisioner == null) {
+            return ProvisionProgress.idle();
+        }
+        return provisioner.progress();
     }
 
     // ------------------------------------------------------------------ events
@@ -127,21 +163,45 @@ public final class ClientBootstrap {
             return;
         }
         Minecraft mc = Minecraft.getInstance();
-        if (mc == null || mc.player == null) {
+        if (mc == null) {
             return;
         }
 
-        ensureInitialised();
-
-        // First-run consent gate: show it once, before anything is downloaded.
-        if (!cfg.consentAccepted && cfg.consentVersion < ConsentScreen.CURRENT_VERSION && mc.gui.screen() == null) {
+        // First-run consent gate. This must fire on the title screen, before the player
+        // ever joins a world: the warning is about a ~700 MB download and a microphone,
+        // and that is not something to spring on someone mid-game.
+        // Re-prompt when the warning has changed materially, not only on a first run. The
+        // version stamp exists for that: a bump means the download size or the hardware
+        // cost changed, and the player agreed to the old numbers, not these.
+        if (cfg.consentVersion < ConsentScreen.CURRENT_VERSION && mc.gui.screen() == null) {
             mc.gui.setScreen(new ConsentScreen(null));
             cfg.consentVersion = ConsentScreen.CURRENT_VERSION;
             cfg.save();
             return;
         }
 
+        // Already accepted (a returning player): start the installer on the title screen so
+        // the engine is ready by the time they are in a world. Deferred a few ticks so the
+        // main menu finishes drawing before a background download begins.
+        if (cfg.consentAccepted) {
+            if (startupTicks < STARTUP_INSTALL_DELAY_TICKS) {
+                startupTicks++;
+                if (startupTicks == STARTUP_INSTALL_DELAY_TICKS) {
+                    ClientBootstrap.startInstall();
+                }
+            }
+        }
+
+        // Keybinds are polled before the in-world check: the settings screen is the one
+        // thing a player must be able to reach from the title screen, and it used to sit
+        // behind a `player == null` return, so the key did nothing outside a world.
         KeyMappings.poll();
+
+        if (mc.player == null) {
+            return;
+        }
+
+        ensureInitialised();
 
         if (challenges != null) {
             challenges.tick();
@@ -152,6 +212,8 @@ public final class ClientBootstrap {
             for (String key : tracker.pollNewItemKeys()) {
                 net.minecraft.world.item.ItemStack stack = tracker.stackForKey(key);
                 String word = resolver.wordFor(stack);
+                MaLanguageLearning.LOGGER.info("[{}] acquired {} -> word={}",
+                        MaLanguageLearning.MODID, key, word);
                 if (word != null) {
                     challenges.queue(key, word, stack);
                 }

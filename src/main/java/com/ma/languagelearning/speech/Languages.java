@@ -3,6 +3,7 @@ package com.ma.languagelearning.speech;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -92,6 +93,51 @@ public final class Languages {
     public static Lang get(String code) {
         Lang lang = BY_CODE.get(code);
         return lang != null ? lang : BY_CODE.get("en");
+    }
+
+    /**
+     * Minecraft language-file code for this language, e.g. {@code "ja"} -> {@code "ja_jp"}.
+     *
+     * <p>Vanilla ships per-locale {@code lang/<code>.json} files, so this is what turns the
+     * English item name into the player's own language. Only languages Minecraft actually
+     * has are listed; anything else falls back to the vanilla locale and keeps the English
+     * name.</p>
+     */
+    public static String mcLocale(String code) {
+        if (code == null) {
+            return "";
+        }
+        return switch (code.toLowerCase(Locale.ROOT)) {
+            case "en" -> "en_us";
+            case "ja" -> "ja_jp";
+            case "zh" -> "zh_cn";
+            case "ko" -> "ko_kr";
+            case "de" -> "de_de";
+            case "es" -> "es_es";
+            case "fr" -> "fr_fr";
+            case "it" -> "it_it";
+            case "pt" -> "pt_br";
+            case "nl" -> "nl_nl";
+            case "pl" -> "pl_pl";
+            case "cs" -> "cs_cz";
+            case "sk" -> "sk_sk";
+            case "tr" -> "tr_tr";
+            case "ru" -> "ru_ru";
+            case "uk" -> "uk_ua";
+            case "sv" -> "sv_se";
+            case "da" -> "da_dk";
+            case "fi" -> "fi_fi";
+            case "hu" -> "hu_hu";
+            case "ro" -> "ro_ro";
+            case "bg" -> "bg_bg";
+            case "el" -> "el_gr";
+            case "ar" -> "ar_sa";
+            case "hi" -> "hi_in";
+            case "th" -> "th_th";
+            case "vi" -> "vi_vn";
+            case "id" -> "id_id";
+            default -> "";
+        };
     }
 
     public static String displayName(String code) {

@@ -131,10 +131,10 @@ def _whisper(
 #: upstream Piper voice list (``rhasspy/piper-voices/voices.json``).
 LANGUAGES: Dict[str, Language] = {
     # ---------------------------------------------------------------- parakeet v3 ----
-    "en": _para("en_US", ("latin",), "en_US-amy-medium", "English", "en"),
+    "en": _para("en_US", ("latin",), "en_US-lessac-high", "English", "en"),
     "es": _para("es_ES", ("latin",), "es_ES-davefx-medium", "Spanish", "es"),
     "fr": _para("fr_FR", ("latin",), "fr_FR-siwis-medium", "French", "fr"),
-    "de": _para("de_DE", ("latin",), "de_DE-thorsten-medium", "German", "de"),
+    "de": _para("de_DE", ("latin",), "de_DE-thorsten-high", "German", "de"),
     "bg": _para("bg_BG", ("cyrillic",), "bg_BG-dimitar-medium", "Bulgarian", "bg"),
     "hr": _para("hr_HR", ("latin",), "", "Croatian", "hr"),  # no Piper voice upstream
     "cs": _para("cs_CZ", ("latin",), "cs_CZ-jirka-medium", "Czech", "cs"),

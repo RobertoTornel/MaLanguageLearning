@@ -1,11 +1,13 @@
 package com.ma.languagelearning.game;
 
 import com.ma.languagelearning.audio.AudioCapture;
+import com.ma.languagelearning.audio.JavaSoundCapture;
 import com.ma.languagelearning.config.MllConfig;
 import com.ma.languagelearning.speech.SpeechResult;
 import com.ma.languagelearning.speech.SttClient;
 import com.ma.languagelearning.speech.TranslationProvider;
 import com.ma.languagelearning.speech.WordPair;
+import com.ma.languagelearning.ui.ChallengeSounds;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.multiplayer.MultiPlayerGameMode;
@@ -74,13 +76,24 @@ public final class ChallengeManager {
     private record PairCompletion(String word, WordPair pair) {
     }
 
-    private static final int MAX_QUEUE = 8;
+    /**
+     * Hard cap on waiting challenges. Kept small on purpose: a stack pickup can create
+     * several new items at once, and a long queue turned a minor event into minutes of
+     * interrogation. Anything beyond this arrives on the next pickup instead.
+     */
+    private static final int MAX_QUEUE = 3;
     /** Minimum recording length before a silence stop is honoured, in ticks. */
     private static final int MIN_RECORD_TICKS = 20;
     /** How long the PASSED/FAILED result stays on screen, in ticks. */
     private static final int RESULT_HOLD_TICKS = 40;
+
+    /** Ticks a pass stays on screen: about 1.2 seconds, long enough to register. */
+    private static final int PASS_HOLD_TICKS = 24;
     /** Delay between the TTS prompt finishing and the drop, in ticks. */
     private static final int DROP_DELAY_TICKS = 10;
+
+    /** Extra ticks the failed result stays on screen *after* the drop has run. */
+    private static final int RESULT_TAIL_TICKS = 20;
 
     private final LearnedLedger ledger;
     private final ItemNameResolver resolver;
@@ -89,6 +102,10 @@ public final class ChallengeManager {
     private final AudioCapture capture;
 
     private final Deque<Pending> queue = new ArrayDeque<>();
+    /** Wall-clock millis before which no new challenge may start (global breathing room). */
+    private long nextStartAtMillis;
+    /** Per-item last-asked time, so one item cannot monopolise the flow. */
+    private final Map<String, Long> itemAskedAt = new HashMap<>();
     private final ConcurrentLinkedQueue<SttCompletion> completions = new ConcurrentLinkedQueue<>();
     /** Translations arrive asynchronously; the challenge shows the raw word until then. */
     private final ConcurrentLinkedQueue<PairCompletion> pairCompletions = new ConcurrentLinkedQueue<>();
@@ -115,10 +132,18 @@ public final class ChallengeManager {
     private boolean sttInFlight;
     private boolean cancelRequested;
     private boolean dropPending;
+    /** Ticks spent waiting on the recogniser, so a slow first load can be explained. */
+    private int evaluatingTicks;
     /** True when the last result was a skip rather than a genuine pass. */
     private boolean skipped;
     /** Registry id of the challenge that just failed, kept until the drop runs. */
     private String failedItemKey;
+
+    /** Copy of the stack being challenged, kept so the HUD can draw its icon. */
+    private ItemStack currentStack = ItemStack.EMPTY;
+
+    /** Stack copies keyed by registry id, so the HUD can draw an icon per challenge. */
+    private final Map<String, ItemStack> pendingStacks = new HashMap<>();
 
     public ChallengeManager(LedgerStore ledger,
                             ItemNameResolver resolver,
@@ -162,6 +187,15 @@ public final class ChallengeManager {
         if (current != null && current.itemKey().equals(itemKey)) {
             return;
         }
+        // Per-item cooldown: an item that was asked very recently is not asked again yet.
+        long now = System.currentTimeMillis();
+        Long askedAt = itemAskedAt.get(itemKey);
+        int itemCooldownMs = Math.max(0, cfg.itemCooldownSeconds) * 1000;
+        if (askedAt != null && itemCooldownMs > 0 && now - askedAt < itemCooldownMs) {
+            LOG.debug("[malanguagelearning] {} is on cooldown, not queueing", itemKey);
+            return;
+        }
+
         if (queue.size() >= MAX_QUEUE) {
             LOG.debug("[malanguagelearning] challenge queue full, dropping {}", itemKey);
             return;
@@ -170,6 +204,9 @@ public final class ChallengeManager {
         int slot = slotOf(stack);
         WordPair pair = resolvePair(word);
         queue.addLast(new Pending(itemKey, word, pair, slot));
+        if (stack != null && !stack.isEmpty()) {
+            pendingStacks.put(itemKey, stack.copy());
+        }
         LOG.debug("[malanguagelearning] queued challenge for {} ({} waiting)", itemKey, queue.size());
 
         if (state == State.IDLE) {
@@ -261,6 +298,12 @@ public final class ChallengeManager {
      * The inventory index of a stack, used only for diagnostics and for the fallback when
      * the failing item can no longer be located by registry id.
      */
+    /** Adopt the queued stack copy for {@code pending} so the HUD can draw its icon. */
+    private void takeIconFor(Pending pending) {
+        ItemStack copy = pendingStacks.remove(pending.itemKey());
+        currentStack = copy == null ? ItemStack.EMPTY : copy;
+    }
+
     private static int slotOf(ItemStack stack) {
         if (stack == null || stack.isEmpty()) {
             return -1;
@@ -314,6 +357,19 @@ public final class ChallengeManager {
                 state = State.IDLE;
                 return;
             }
+            // Global cooldown: a short quiet gap so a burst of pickups does not turn into a
+            // wall of back-to-back prompts.
+            MllConfig cfg2 = MllConfig.get();
+            long nowMillis = System.currentTimeMillis();
+            if (nextStartAtMillis > nowMillis) {
+                // Re-check on the next tick instead of blocking the thread.
+                state = State.WAITING_INVENTORY_CLOSE;
+                return;
+            }
+            itemAskedAt.put(current.itemKey(), nowMillis);
+            nextStartAtMillis = nowMillis + Math.max(0, cfg2.globalCooldownSeconds) * 1000L;
+
+            takeIconFor(current);
             beginListening();
         } catch (Exception e) {
             LOG.error("[malanguagelearning] failed to start challenge", e);
@@ -373,6 +429,11 @@ public final class ChallengeManager {
     }
 
     /** The most recent resolved outcome. */
+    /** True when the last result was a skip rather than a real pass (no microphone). */
+    public boolean isSkipped() {
+        return skipped;
+    }
+
     public ChallengeOutcome currentOutcome() {
         return outcome;
     }
@@ -405,6 +466,17 @@ public final class ChallengeManager {
         return current == null ? null : current.itemKey();
     }
 
+    /**
+     * A copy of the stack being asked about, for the HUD icon, or an empty stack.
+     *
+     * <p>This is a copy on purpose: the live stack can be consumed or merged while the
+     * popup is on screen (that is the whole point of the drop), and drawing from a copy
+     * keeps the icon stable for the life of the challenge.</p>
+     */
+    public ItemStack currentStack() {
+        return currentStack == null ? ItemStack.EMPTY : currentStack;
+    }
+
     /** Current state, for the HUD and for tests. */
     public State state() {
         return state;
@@ -419,7 +491,12 @@ public final class ChallengeManager {
             case IDLE -> "";
             case WAITING_INVENTORY_CLOSE -> "Close your inventory to answer";
             case LISTENING -> recordingStarted ? "Listening…" : "Microphone unavailable";
-            case EVALUATING -> "Checking…";
+            case EVALUATING -> evaluatingTicks > 120
+                    // First use of a language loads its model; Japanese/Chinese/Korean need
+                    // Whisper, which is a ~1.5 GB download on the very first attempt. Saying
+                    // so beats leaving the player thinking the mod has frozen.
+                    ? "Checking… (first run downloads a model — this can take minutes)"
+                    : "Checking…";
             case PASSED -> skipped ? "No microphone — skipped" : "Correct!";
             case FAILED -> "Say it again";
         };
@@ -436,10 +513,14 @@ public final class ChallengeManager {
 
     private void beginListening() {
         MllConfig cfg = MllConfig.get();
+        LOG.debug("[malanguagelearning] begin challenge for {} (mic={})",
+                current == null ? "?" : current.itemKey(),
+                capture == null ? "none" : "present");
         int seconds = Math.max(1, cfg.answerSeconds);
         skipped = false;
         remainingTicks = seconds * 20;
         recordTicks = 0;
+        evaluatingTicks = 0;
         holdTicks = 0;
         dropTicks = 0;
         dropPending = false;
@@ -475,17 +556,35 @@ public final class ChallengeManager {
                 }
             }
             case WAITING_INVENTORY_CLOSE -> {
-                // Nothing to do until the inventory closes; the event drives the transition.
                 if (queue.isEmpty() && current == null) {
                     state = State.IDLE;
+                    return;
+                }
+                // The name says "wait for the inventory", but that is only the *historical*
+                // trigger. An item picked straight up off the ground never involves a
+                // container, so waiting for one left those pickups silently stuck here.
+                // Start as soon as the screen is clear of menus.
+                Minecraft mc = Minecraft.getInstance();
+                boolean menuOpen = mc != null && mc.gui != null
+                        && mc.gui.screen() instanceof AbstractContainerScreen<?>;
+                if (menuOpen || mc == null || mc.player == null) {
+                    return;
+                }
+                // Retry when there is anything at all to do — a queued item *or* a
+                // `current` that was held back by the global cooldown. Checking only the
+                // queue left that cooldown-retry case stalled forever.
+                if (state == State.WAITING_INVENTORY_CLOSE && (!queue.isEmpty() || current != null)) {
+                    onInventoryClosed();
                 }
             }
             case LISTENING -> tickListening();
-            case EVALUATING -> {
-                // Waiting on the STT worker; the queue drain moves us on.
-            }
+            case EVALUATING -> tickEvaluating();
             case PASSED, FAILED -> tickResult();
         }
+    }
+
+    private void tickEvaluating() {
+        evaluatingTicks++;
     }
 
     private void tickListening() {
@@ -508,14 +607,28 @@ public final class ChallengeManager {
             }
         }
 
-        // Timer expired, or the capture ended on its own after a real attempt.
+        // Always let the full answer window run. Ending the take as soon as a pause was
+        // heard cut people off mid-attempt, so a short pause looked like a failed answer.
+        // The remaining-timer check below is what closes the window.
+
+        // The answer window is authoritative: the player gets all of answerSeconds, and only
+        // the timer closes it. The capture ending on its own is not a reason to stop, because
+        // a brief pause in the middle of a word would otherwise end the attempt far too soon.
         boolean timedOut = remainingTicks <= 0;
-        boolean finishedNaturally = !stillRecording && recordTicks >= MIN_RECORD_TICKS;
-        if (timedOut || finishedNaturally) {
+        if (timedOut) {
+            // Read the flag BEFORE stopping: stopCaptureQuietly used to clear it, which made
+            // every completed answer look like "no microphone" and skipped the challenge
+            // silently. That is why nothing ever turned green or dropped an item.
+            boolean hadMicrophone = recordingStarted;
             byte[] pcm = stopCaptureQuietly();
-            if (!recordingStarted) {
+            if (!hadMicrophone) {
                 // No microphone at all: nothing to enforce, so do not punish the player.
                 // The item is deliberately NOT marked learned — they never got to answer.
+                // This used to be completely silent, which looked exactly like the mod
+                // being broken: the challenge began, nothing drew, nothing happened.
+                LOG.warn("[malanguagelearning] cannot listen for {}: {}",
+                        pendingKeyForLog(),
+                        capture == null ? "no capture object" : String.valueOf(capture.lastError()));
                 outcome = ChallengeOutcome.SKIPPED;
                 state = State.PASSED;
                 skipped = true;
@@ -523,6 +636,8 @@ public final class ChallengeManager {
                 current = null;
                 return;
             }
+            LOG.debug("[malanguagelearning] capture ended for {}: {} bytes",
+                    pendingKeyForLog(), pcm == null ? -1 : pcm.length);
             if (pcm == null || pcm.length < 3200) {
                 // Under ~100 ms of audio: treat as no answer.
                 resolveFailure(-1f);
@@ -594,17 +709,37 @@ public final class ChallengeManager {
         lastConfidence = result.confidence();
 
         List<String> alternatives = buildAlternatives(pending);
-        boolean ok = SpeechMatcher.matches(pending.word(), result.text(), alternatives, cfg.targetLanguage);
-        LOG.debug("[malanguagelearning] heard '{}' (conf {}) for '{}' -> {}",
-                result.text(), result.confidence(), pending.word(), ok ? "PASS" : "FAIL");
+        boolean textMatches = SpeechMatcher.matches(
+                pending.word(), result.text(), alternatives, cfg.targetLanguage);
+
+        // Confidence is a second, independent gate. It is deliberately not the only check:
+        // correct short words routinely score well under 0.9, so requiring a high number
+        // here would punish accurate players. It exists to reject a bare guess that happens
+        // to land within edit distance.
+        float minConfidence = Math.max(0f, Math.min(1f, cfg.minConfidence));
+        boolean confidentEnough = result.confidence() <= 0f || result.confidence() >= minConfidence;
+        boolean ok = textMatches && confidentEnough;
+
+        LOG.debug("[malanguagelearning] heard '{}' (conf {}) for '{}' -> {} (text={}, confOk={})",
+                result.text(), result.confidence(), pending.word(),
+                ok ? "PASS" : "FAIL", textMatches, confidentEnough);
 
         if (ok) {
             long now = System.currentTimeMillis();
             ledger.markLearned(pending.itemKey(), pending.word(), now);
             outcome = ChallengeOutcome.PASSED;
             state = State.PASSED;
-            holdTicks = RESULT_HOLD_TICKS;
+            // Hold long enough for the green flash to actually be seen as a state rather
+            // than a blink: ~1.2 s at 20 ticks per second.
+            holdTicks = PASS_HOLD_TICKS;
+            // Cancel anything a previous failure left queued. Without this, a drop pending
+            // from an earlier wrong answer fired here and threw the item away on a correct
+            // answer, which looked exactly like the mod punishing success.
+            dropPending = false;
+            dropTicks = 0;
+            failedItemKey = null;
             current = null;
+            ChallengeSounds.passed();
         } else {
             resolveFailure(result.confidence());
         }
@@ -649,6 +784,8 @@ public final class ChallengeManager {
             return;
         }
 
+        ChallengeSounds.failed();
+
         if (cfg.speakWordOnFailure) {
             speakAsync(pending.word());
         }
@@ -658,6 +795,9 @@ public final class ChallengeManager {
             // Let the spoken word finish before the item leaves the inventory, so the
             // punishment is tied to the sound the player just heard.
             dropTicks = DROP_DELAY_TICKS + (cfg.speakWordOnFailure ? 30 : 0);
+            // The hold must outlast the drop, or tickResult() returns the machine to IDLE
+            // in the same tick the drop was due and the item is silently never thrown.
+            holdTicks = dropTicks + RESULT_TAIL_TICKS;
         }
         current = null;
     }
@@ -702,10 +842,10 @@ public final class ChallengeManager {
                 return;
             }
             LocalPlayer player = mc.player;
-            // Only act when the player is looking at the world, not at another menu.
-            if (mc.gui.screen() instanceof AbstractContainerScreen<?>) {
-                return;
-            }
+            // A container being open must not swallow the drop: the player is allowed to
+            // open their inventory while the result is on screen, and the consequence is
+            // owed either way. Dropping through the open inventory menu is the safer of
+            // the two paths, because container id 0 is the same menu in both cases.
 
             MllConfig cfg = MllConfig.get();
             if (!cfg.dropOnFailure) {
@@ -714,13 +854,14 @@ public final class ChallengeManager {
 
             int menuSlot = findMenuSlot(player, failedItemKey);
             if (menuSlot < 0) {
-                LOG.debug("[malanguagelearning] nothing to drop: item no longer carried");
+                LOG.info("[malanguagelearning] nothing to drop: {} is no longer carried", failedItemKey);
                 return;
             }
 
             MultiPlayerGameMode gameMode = mc.gameMode;
             gameMode.handleContainerInput(InventoryMenu.CONTAINER_ID, menuSlot, 1, ContainerInput.THROW, player);
-            LOG.debug("[malanguagelearning] dropped stack from menu slot {}", menuSlot);
+            LOG.info("[malanguagelearning] dropped {} from inventory slot {}",
+                    failedItemKey, menuSlot);
         } catch (Exception e) {
             LOG.error("[malanguagelearning] failed to drop item", e);
         }
@@ -807,6 +948,23 @@ public final class ChallengeManager {
         clip.start();
     }
 
+    /** True when the microphone has heard a full utterance and trailing silence. */
+    private boolean speechEnded() {
+        if (capture instanceof JavaSoundCapture javaSound) {
+            try {
+                return javaSound.speechEnded();
+            } catch (Exception e) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /** Current challenge key, for log lines that run after {@code current} was cleared. */
+    private String pendingKeyForLog() {
+        return current == null ? "?" : current.itemKey();
+    }
+
     private byte[] stopCaptureQuietly() {
         byte[] pcm = new byte[0];
         if (capture == null) {
@@ -821,7 +979,6 @@ public final class ChallengeManager {
             } catch (Exception ignored) {
             }
         }
-        recordingStarted = false;
         return pcm;
     }
 
@@ -831,9 +988,15 @@ public final class ChallengeManager {
         queue.clear();
         remainingTicks = 0;
         recordTicks = 0;
+        evaluatingTicks = 0;
         holdTicks = 0;
-        dropTicks = 0;
-        dropPending = false;
+        // A pending drop is deliberately left alone here. reset() runs on cancel, on retry
+        // and after an error, and the consequence of a failed word (the item hitting the
+        // floor) must survive all three; otherwise a player can dodge it by tapping the
+        // retry key or reopening a container. tickResult() clears it once it has fired.
+        if (!dropPending) {
+            dropTicks = 0;
+        }
         sttInFlight = false;
         cancelRequested = false;
         skipped = false;

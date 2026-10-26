@@ -206,6 +206,17 @@ class ServerState:
         self.models.unload_all()
 
 
+def read_build_id() -> str:
+    """Build id written next to this package, or "" when absent."""
+    try:
+        from pathlib import Path as _Path
+
+        marker = _Path(__file__).with_name("build_id.txt")
+        return marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+    except Exception:
+        return ""
+
+
 def create_app(models_dir: Path, device: str = "auto") -> FastAPI:
     """Build the FastAPI app bound to *models_dir* and a resolved *device*."""
     state = ServerState(models_dir, device)
@@ -234,6 +245,9 @@ def create_app(models_dir: Path, device: str = "auto") -> FastAPI:
             "backends": sorted({languages.LANGUAGES[c].stt_backend for c in languages.LANGUAGES}),
             "languages_count": len(languages.LANGUAGES),
             "uptime_s": round(time.time() - state.started_at, 1),
+            # Identifies the packaged sidecar so a stale process from an earlier run can be
+            # told apart from the one this jar shipped.
+            "build": read_build_id(),
             "translit": translit.describe(),
         }
 

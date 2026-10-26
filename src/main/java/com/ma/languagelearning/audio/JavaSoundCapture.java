@@ -22,6 +22,10 @@ public final class JavaSoundCapture implements AudioCapture {
     private static final int SAMPLE_BITS = 16;
     private static final int CHANNELS = 1;
     private static final int MAX_SECONDS = 20;
+    /** Amplitude above which a chunk counts as speech (16-bit full scale is 32767). */
+    private static final int SPEECH_THRESHOLD = 1200;
+    /** Seconds of trailing quiet that end a take. */
+    private static final float SILENCE_SECONDS = 1.2f;
 
     private final AudioFormat format = new AudioFormat(SAMPLE_RATE, SAMPLE_BITS, CHANNELS, true, false);
 
@@ -30,6 +34,14 @@ public final class JavaSoundCapture implements AudioCapture {
     private volatile ByteArrayOutputStream buffer;
     private volatile boolean recording;
     private volatile String lastError;
+    /**
+     * Set by the pump thread once it has heard speech and then a run of silence, meaning
+     * the player has finished saying the word. Without this the mod records for the full
+     * answer window every time, which makes every challenge feel like it hung.
+     */
+    private volatile boolean speechEnded;
+    /** Peak amplitude seen during this capture, so silence-only takes can be told apart. */
+    private volatile int peakAmplitude;
 
     @Override
     public boolean start() {
@@ -37,6 +49,8 @@ public final class JavaSoundCapture implements AudioCapture {
             return true;
         }
         lastError = null;
+        speechEnded = false;
+        peakAmplitude = 0;
         buffer = new ByteArrayOutputStream(SAMPLE_RATE == 0 ? 8192 : 16_000 * 2 * 6);
         try {
             DataLine.Info info = new DataLine.Info(TargetDataLine.class, format);
@@ -66,6 +80,8 @@ public final class JavaSoundCapture implements AudioCapture {
     private void pump() {
         byte[] chunk = new byte[4096];
         int maxBytes = (int) (SAMPLE_RATE * (SAMPLE_BITS / 8) * CHANNELS * MAX_SECONDS);
+        boolean heardSpeech = false;
+        int quietChunks = 0;
         try {
             TargetDataLine l = this.line;
             while (recording && l != null && l.isOpen()) {
@@ -85,6 +101,25 @@ public final class JavaSoundCapture implements AudioCapture {
                     break;
                 }
                 b.write(chunk, 0, read);
+
+                // Voice activity: once we have heard something loud enough to be speech,
+                // stop after roughly a second of quiet. The threshold is deliberately
+                // generous so a quiet microphone still triggers, and it never fires before
+                // speech has been heard, so a silent take still uses the full window.
+                int peak = peakOf(chunk, read);
+                if (peak > peakAmplitude) {
+                    peakAmplitude = peak;
+                }
+                if (peak > SPEECH_THRESHOLD) {
+                    heardSpeech = true;
+                    quietChunks = 0;
+                } else if (heardSpeech) {
+                    quietChunks++;
+                    if (quietChunks * chunk.length >= (int) (SAMPLE_RATE * (SAMPLE_BITS / 8) * SILENCE_SECONDS)) {
+                        speechEnded = true;
+                        break;
+                    }
+                }
             }
         } catch (Exception e) {
             if (recording) {
@@ -100,9 +135,36 @@ public final class JavaSoundCapture implements AudioCapture {
         return recording;
     }
 
+    /** True once speech was heard and then followed by enough silence to stop. */
+    public boolean speechEnded() {
+        return speechEnded;
+    }
+
+    /** Peak amplitude of the last capture, for diagnostics. */
+    public int peakAmplitude() {
+        return peakAmplitude;
+    }
+
+    /** Peak amplitude of a 16-bit little-endian PCM buffer. */
+    private static int peakOf(byte[] data, int length) {
+        int peak = 0;
+        for (int i = 0; i + 1 < length; i += 2) {
+            int sample = (short) ((data[i] & 0xFF) | (data[i + 1] << 8));
+            int magnitude = sample < 0 ? -sample : sample;
+            if (magnitude > peak) {
+                peak = magnitude;
+            }
+        }
+        return peak;
+    }
+
     @Override
     public byte[] stop() {
-        recording = false;
+        // Order matters: join the pump *before* clearing the flag, so it can finish reading
+        // the audio the line already buffered. Clearing first made the loop exit instantly
+        // and threw away everything after the last chunk boundary, which is why short
+        // answers came back as a few hundred bytes and never reached the recogniser.
+        Thread t = this.worker;
         try {
             TargetDataLine l = this.line;
             if (l != null) {
@@ -111,13 +173,13 @@ public final class JavaSoundCapture implements AudioCapture {
                 } catch (Exception ignored) {
                 }
             }
-            Thread t = this.worker;
             if (t != null && t != Thread.currentThread()) {
-                t.join(1000);
+                t.join(1500);
             }
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
         }
+        recording = false;
         ByteArrayOutputStream b = this.buffer;
         byte[] out = b == null ? new byte[0] : b.toByteArray();
         cleanup();

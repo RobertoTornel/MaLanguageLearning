@@ -17,6 +17,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -73,8 +74,30 @@ public final class LedgerStore implements LearnedLedger {
         if (itemKey == null || itemKey.isBlank()) {
             return false;
         }
+        MllConfig cfg = MllConfig.get();
+        String mode = cfg.memoryMode == null ? "permanent" : cfg.memoryMode.toLowerCase(Locale.ROOT);
+        if ("off".equals(mode)) {
+            // Nothing is ever considered known, so every pickup asks again.
+            return false;
+        }
         ensureLoaded();
-        return words.containsKey(itemKey);
+        Entry entry = words.get(itemKey);
+        if (entry == null) {
+            return false;
+        }
+        if ("dynamic".equals(mode)) {
+            long windowMillis = Math.max(1, cfg.memoryResetMinutes) * 60_000L;
+            long age = System.currentTimeMillis() - entry.learnedAt();
+            if (age > windowMillis) {
+                // Forgotten: drop it so the word is asked again, and so the file reflects
+                // the same thing the player is being shown.
+                words.remove(itemKey);
+                dirty = true;
+                maybeSave(System.currentTimeMillis());
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override

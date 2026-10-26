@@ -16,6 +16,7 @@ Design goals
 
 from __future__ import annotations
 
+import concurrent.futures
 import gc
 import json
 import logging
@@ -29,7 +30,7 @@ import urllib.request
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import numpy as np
 
@@ -46,7 +47,16 @@ TARGET_SAMPLE_RATE = 16_000
 #: Emitted on stderr so the Minecraft mod can render a progress bar.
 PROGRESS_PREFIX = "MLL_PROGRESS"
 
-HF_BASE = "https://huggingface.co"
+#: Hosts that serve the same Hugging Face files. ``hf-mirror.com`` is markedly faster
+#: from a lot of the world, and Cloudflare in front of the main site varies a lot by
+#: route, so the mirror is picked per-session by measuring rather than assumed.
+HF_HOSTS = (
+    "https://huggingface.co",
+    "https://hf-mirror.com",
+)
+
+#: The host chosen by :func:`pick_fastest_host`, cached for the process lifetime.
+_FASTEST_HOST: Optional[str] = None
 
 
 # ======================================================================================
@@ -258,6 +268,55 @@ def physical_core_count() -> int:
 # ======================================================================================
 # Downloading
 # ======================================================================================
+
+
+def _probe_host(host: str, timeout: float = 6.0) -> Optional[float]:
+    """Return a latency score for *host*, or ``None`` when it is unusable.
+
+    The score is the time to first byte of a small real file (the repo listing is
+    cheap and always present), which tracks what a download will actually feel like
+    far better than a HEAD against the root.
+    """
+    url = f"{host}/api/models/istupakov/parakeet-tdt-0.6b-v3-onnx"
+    request = urllib.request.Request(url, headers={"User-Agent": "malanguage-server/1.0"})
+    try:
+        started = time.monotonic()
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            response.read(256)
+        return time.monotonic() - started
+    except Exception:  # noqa: BLE001 - any failure just means "do not use this one"
+        return None
+
+
+def pick_fastest_host(hosts: Tuple[str, ...] = HF_HOSTS) -> str:
+    """Return the fastest reachable host, probing them concurrently.
+
+    Falls back to the first host when nothing answers, so a fully offline machine
+    still produces a real URL and a real error message from the download itself.
+    """
+    global _FASTEST_HOST
+    if _FASTEST_HOST is not None:
+        return _FASTEST_HOST
+    if len(hosts) == 1:
+        _FASTEST_HOST = hosts[0]
+        return _FASTEST_HOST
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(hosts)) as pool:
+        results = list(pool.map(_probe_host, hosts))
+
+    best_host = None
+    best_score = None
+    for host, score in zip(hosts, results):
+        if score is None:
+            logger.info("host %s is not reachable", host)
+            continue
+        logger.info("host %s answered in %.0f ms", host, score * 1000)
+        if best_score is None or score < best_score:
+            best_host, best_score = host, score
+
+    _FASTEST_HOST = best_host or hosts[0]
+    logger.info("using model host %s", _FASTEST_HOST)
+    return _FASTEST_HOST
 
 
 class _Downloader:
@@ -780,31 +839,79 @@ class ModelManager:
     def _download_files(
         self, repo: str, files: list[FileSpec], target: Path, backend: str
     ) -> None:
-        """Download *files* from *repo* into *target*, reporting progress."""
+        """Download *files* from *repo* into *target*, all of them at once.
+
+        Files are fetched concurrently: an encoder is a single ~650 MB blob next to a
+        ~18 MB decoder, so a sequential loop spends nearly all its time on one socket.
+        Progress is aggregated across the whole set rather than per file, so the bar
+        still moves smoothly while several downloads are in flight.
+        """
         total_weight = sum(f.approx_mb for f in files) or float(len(files))
-        fetched = 0.0
         downloader = _Downloader(backend)
         target.mkdir(parents=True, exist_ok=True)
+        host = pick_fastest_host()
 
+        # Fraction of the total already on disk, and per-file progress in [0, 1].
+        cached_weight = 0.0
+        progress_by_file: Dict[str, float] = {}
+        weight_by_file: Dict[str, float] = {}
+        lock = threading.Lock()
+
+        def emit() -> None:
+            with lock:
+                done = cached_weight + sum(
+                    weight_by_file[name] * frac for name, frac in progress_by_file.items()
+                )
+                report("download", backend, 100 * done / total_weight, "downloading")
+
+        todo: list[FileSpec] = []
         for spec_file in files:
             destination = target / spec_file.local
             weight = spec_file.approx_mb or 1.0
+            weight_by_file[spec_file.local] = weight
             if destination.exists() and destination.stat().st_size > 0:
-                fetched += weight
-                report("download", backend, 100 * fetched / total_weight, f"cached {spec_file.local}")
-                continue
-            url = f"{HF_BASE}/{repo}/resolve/main/{spec_file.remote}"
+                cached_weight += weight
+                progress_by_file[spec_file.local] = 1.0
+            else:
+                progress_by_file[spec_file.local] = 0.0
+                todo.append(spec_file)
+        emit()
+
+        if not todo:
+            report("download", backend, 100, "already cached")
+            return
+
+        def fetch_one(spec_file: FileSpec) -> None:
+            name = spec_file.local
+            destination = target / name
+            weight = weight_by_file[name]
+            url = f"{host}/{repo}/resolve/main/{spec_file.remote}"
             logger.info("downloading %s -> %s", url, destination)
-            base = 100 * fetched / total_weight
-            span = 100 * weight / total_weight
 
-            def progress(fraction: float, _base=base, _span=span, name=spec_file.local) -> None:
-                report("download", backend, _base + _span * fraction, name)
+            def progress(fraction: float, _name=name) -> None:
+                with lock:
+                    progress_by_file[_name] = max(progress_by_file.get(_name, 0.0), fraction)
+                emit()
 
-            downloader.fetch(url, destination, weight=1.0, progress=progress)
-            fetched += weight
-            report("download", backend, 100 * fetched / total_weight, f"done {spec_file.local}")
+            # Each file gets its own downloader so a stalled socket cannot block the rest.
+            _Downloader(backend).fetch(url, destination, weight=weight, progress=progress)
+            with lock:
+                progress_by_file[name] = 1.0
+            emit()
 
+        errors: list[Exception] = []
+        # Four sockets saturate a typical home connection without thrashing disk.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(todo))) as pool:
+            futures = {pool.submit(fetch_one, f): f for f in todo}
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception as exc:  # noqa: BLE001 - reported after the pool drains
+                    errors.append(exc)
+                    logger.warning("download failed for %s: %s", futures[future].local, exc)
+
+        if errors:
+            raise errors[0]
         report("download", backend, 100, "download complete")
 
     def _download_snapshot_repo(

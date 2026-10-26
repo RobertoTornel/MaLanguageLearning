@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.ma.languagelearning.config.MllConfig;
+import com.ma.languagelearning.speech.Languages;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.locale.Language;
@@ -20,8 +21,10 @@ import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Locale;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -86,7 +89,18 @@ public final class ItemNameResolver implements WordResolver {
             return null;
         }
 
-        String name = hoverName(stack);
+        // The word to say must be in the language being learned, not English. Vanilla (and
+        // most mods) ship official translations for item names, so reading the target
+        // locale's lang file gives a real, correct word — "Dirt" becomes "土" for Japanese.
+        // Falling back to the hover name keeps unlisted or untranslated items usable.
+        String name = null;
+        String locale = Languages.mcLocale(cfg.targetLanguage);
+        if (!locale.isBlank()) {
+            name = translatedName(stack, locale);
+        }
+        if (name == null || name.isBlank()) {
+            name = hoverName(stack);
+        }
         if (name == null) {
             return null;
         }
@@ -129,7 +143,13 @@ public final class ItemNameResolver implements WordResolver {
             return fallback;
         }
         String translated = table.get(descriptionId);
-        return translated == null || translated.isBlank() ? fallback : translated;
+        if (translated != null && !translated.isBlank()) {
+            return translated;
+        }
+        // Modded items frequently ship only an English translation, or none at all. The
+        // hover name is still a real, speakable word, so fall back to it rather than
+        // leaving the item unusable.
+        return fallback;
     }
 
     /**
@@ -191,36 +211,73 @@ public final class ItemNameResolver implements WordResolver {
             if (mc == null) {
                 return Map.of();
             }
-            Identifier id = Identifier.fromNamespaceAndPath("minecraft", "lang/" + locale + ".json");
+
+            Map<String, String> table = new HashMap<>();
+
+            // Every namespace contributes its own lang file, not just vanilla. A modded
+            // item's name lives in that mod's assets/<namespace>/lang/<locale>.json, so
+            // reading only "minecraft" left every modded item falling back to English.
+            Set<String> namespaces = new LinkedHashSet<>();
+            namespaces.add("minecraft");
+            namespaces.addAll(mc.getResourceManager().getNamespaces());
+
+            for (String namespace : namespaces) {
+                mergeNamespace(table, namespace, locale);
+            }
+
+            if (table.isEmpty()) {
+                // Some packs only ship the base locale (e.g. "de" but not "de_de").
+                String base = baseOf(locale);
+                if (!base.equals(locale)) {
+                    for (String namespace : namespaces) {
+                        mergeNamespace(table, namespace, base);
+                    }
+                }
+            }
+
+            LOG.debug("[malanguagelearning] loaded {} translations across {} namespaces for {}",
+                    table.size(), namespaces.size(), locale);
+            return table;
+        } catch (Exception e) {
+            LOG.error("[malanguagelearning] failed to read language files for {}", locale, e);
+            return Map.of();
+        }
+    }
+
+    /**
+     * Merge one namespace's {@code lang/<locale>.json} into {@code table}.
+     *
+     * <p>Later namespaces must not clobber earlier ones for the same key, and vanilla wins
+     * ties: a mod that ships a key colliding with a vanilla one should not rename vanilla
+     * items.</p>
+     */
+    private static void mergeNamespace(Map<String, String> table, String namespace, String locale) {
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc == null) {
+                return;
+            }
+            Identifier id = Identifier.fromNamespaceAndPath(namespace, "lang/" + locale + ".json");
             Optional<Resource> resource = mc.getResourceManager().getResource(id);
             if (resource.isEmpty()) {
-                Identifier fallbackId = Identifier.fromNamespaceAndPath("minecraft", "lang/" + baseOf(locale) + ".json");
-                resource = mc.getResourceManager().getResource(fallbackId);
-                if (resource.isEmpty()) {
-                    LOG.warn("[malanguagelearning] no language file for locale {}", locale);
-                    return Map.of();
-                }
+                return;
             }
             try (InputStream in = resource.get().open();
                  Reader reader = new InputStreamReader(in, StandardCharsets.UTF_8)) {
                 JsonElement root = JsonParser.parseReader(reader);
                 if (root == null || !root.isJsonObject()) {
-                    return Map.of();
+                    return;
                 }
                 JsonObject object = root.getAsJsonObject();
-                Map<String, String> table = new HashMap<>(Math.max(16, object.size()));
                 for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
                     JsonElement value = entry.getValue();
                     if (value != null && value.isJsonPrimitive()) {
-                        table.put(entry.getKey(), value.getAsString());
+                        table.putIfAbsent(entry.getKey(), value.getAsString());
                     }
                 }
-                LOG.debug("[malanguagelearning] loaded {} translations for {}", table.size(), locale);
-                return table;
             }
         } catch (Exception e) {
-            LOG.error("[malanguagelearning] failed to read language file {}", locale, e);
-            return Map.of();
+            LOG.debug("[malanguagelearning] could not read lang file {}/{}", namespace, locale, e);
         }
     }
 
