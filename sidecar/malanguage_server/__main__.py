@@ -52,9 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--device",
         default=os.environ.get("MLL_DEVICE", "auto"),
-        choices=("auto", "cpu", "cuda"),
-        help="inference device; 'cuda' degrades to cpu when onnxruntime-gpu is absent "
-        "(default: auto, env MLL_DEVICE)",
+        choices=("auto", "cpu", "cuda", "gpu"),
+        help="inference device: auto|cpu|cuda|gpu ('gpu' is an alias for 'cuda', kept "
+        "because the Minecraft mod sends it); degrades to cpu when onnxruntime-gpu is "
+        "absent (default: auto, env MLL_DEVICE)",
     )
     parser.add_argument(
         "--models-dir",

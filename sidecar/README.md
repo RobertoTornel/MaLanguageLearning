@@ -48,21 +48,29 @@ uv run python -m malanguage_server --port 8737
 
 Optional extras:
 
-| extra   | install                                   | gives you                                        |
-|---------|-------------------------------------------|--------------------------------------------------|
-| whisper | `uv pip install 'malanguage-server[whisper]'` | `faster-whisper` — real Whisper for ja/zh/ko/… |
-| zh      | `uv pip install 'malanguage-server[zh]'`  | pinyin via `pypinyin`                            |
-| cuda    | `uv pip install 'malanguage-server[cuda]'`| `onnxruntime-gpu`                                |
+| extra  | install                                        | gives you                                             |
+|--------|------------------------------------------------|-------------------------------------------------------|
+| whisper| `uv pip install 'malanguage-server[whisper]'`  | `faster-whisper` — real Whisper for ja/zh/ko/…        |
+| zh     | `uv pip install 'malanguage-server[zh]'`       | pinyin via `pypinyin`                                 |
+| cuda   | `uv pip install 'malanguage-server[cuda]'`     | `onnxruntime-gpu`                                     |
+| ja-tts | `uv pip install 'malanguage-server[ja-tts]'`   | `pyopenjtalk-plus` — Piper's Japanese voice needs it  |
+| full   | `uv pip install 'malanguage-server[full]'`     | all of the above except CUDA                          |
 
-**No extra required for CJK:** set `MLL_WHISPER_BACKEND=onnx` and the sidecar serves
-ja/zh/ko/ar/hi/tr/vi/th/… with the bundled ONNX Whisper-base model (≈107 MB) using only
-`onnx-asr` + `onnxruntime`.
+**No extra required for CJK speech input:** set `MLL_WHISPER_BACKEND=onnx` and the
+sidecar serves ja/zh/ko/ar/hi/tr/vi/th/… with the bundled ONNX Whisper-base model
+(≈107 MB) using only `onnx-asr` + `onnxruntime`.
+
+**TTS capability gaps are 404, not errors.** Some Piper voices need an extra phonemizer
+(Japanese → `pyopenjtalk-plus`, Chinese → `g2pw`, Thai → `tltk`). Without it the voice
+still downloads but cannot phonemize; `/synthesize` answers **404** with the missing
+package in `message`, so the mod beeps instead of retrying forever. Croatian and Maltese
+have no Piper voice upstream at all and always answer 404.
 
 ### CLI
 
 ```
 python -m malanguage_server [--port 8737] [--host 127.0.0.1]
-                            [--device auto|cpu|cuda] [--models-dir PATH]
+                            [--device auto|cpu|cuda|gpu] [--models-dir PATH]
                             [--log-level debug|info|warning|error]
                             [--preload LANG ...]
 ```
@@ -266,8 +274,8 @@ Rules:
 * **Hot-swappable, LRU of 2.** Loading a third model frees the least recently used one
   (`del` + `gc.collect()`).
 * **Device.** `--device auto` probes onnxruntime and uses CUDA when present; `--device
-  cuda` degrades to CPU with a logged warning if `onnxruntime-gpu` is absent. CUDA is
-  never required.
+  cuda` (or its alias `gpu`, which the mod sends) degrades to CPU with a logged warning
+  if `onnxruntime-gpu` is absent. CUDA is never required.
 * **Cache.** `--models-dir` / `MLL_MODELS_DIR`; files are written to `*.part` and
   renamed on completion, so an interrupted download never looks complete.
 

@@ -40,6 +40,11 @@ whisper = ["faster-whisper>=1.0"]
 zh = ["pypinyin>=0.51"]
 # GPU wheels for onnxruntime. Optional: the server degrades to CPU when unavailable.
 cuda = ["onnxruntime-gpu>=1.18"]
+# Piper's Japanese voice needs its own phonemizer; without it /synthesize returns 404.
+# (Chinese and Thai voices need the same treatment -- see README.)
+ja-tts = ["pyopenjtalk-plus>=0.4"]
+# Everything that makes ja/zh/ko/ar/hi/tr/vi/th speech *and* speech output work.
+full = ["faster-whisper>=1.0", "pypinyin>=0.51", "pyopenjtalk-plus>=0.4"]
 
 [project.scripts]
 malanguage-server = "malanguage_server.__main__:main"

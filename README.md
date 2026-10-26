@@ -33,6 +33,13 @@ process on `127.0.0.1`. **It never leaves your machine.**
 
 ---
 
+## Download
+
+* **Modrinth:** https://modrinth.com/mod/malanguagelearning
+* **GitHub:** https://github.com/RobertoTornel/MaLanguageLearning
+
+---
+
 ## How it works
 
 ```
