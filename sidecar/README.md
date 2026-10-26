@@ -310,7 +310,11 @@ malanguage_server/
   translit.py       script detection, kana/Hangul, bundled IPA rule tables
   tts.py            Piper voice download/cache/synthesis
   languages.py      the language registry (backend + voice + scripts per language)
+tests/
+  test_translit.py  contract tests for /transliterate (no models, no network)
 ```
+
+Run the tests with `python -m pytest tests/ -q` from `sidecar/`.
 
 ## Licence
 
