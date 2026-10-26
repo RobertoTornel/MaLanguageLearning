@@ -13,8 +13,8 @@ is yours and that word is learned forever. Fail, and the mod speaks the word to 
 
 **THIS MOD REQUIRES A SPEECH-RECOGNITION MODEL THAT IS DOWNLOADED TO YOUR COMPUTER.**
 
-* **IT IS LARGE.** The int8 Parakeet v3 model is about **671 MB**. The full-precision model is
-  about **2.5 GB**. The first run also fetches a small Python runtime (~50 MB) and its packages.
+* **IT IS LARGE.** The int8 Parakeet v3 model is about **670 MB**. The full-precision model is
+  about **2.5 GB**. With the TTS voices this reaches roughly **800 MB**, measured on disk. The first run also fetches a small Python runtime (~50 MB) and its packages.
 * **IT NEEDS EXTRA RAM.** Expect roughly **1–3 GB of system RAM** used while speech recognition
   is active, on top of Minecraft itself.
 * **IT CAN USE YOUR GPU.** GPU mode (CUDA) is available and is **togglable with CPU mode** in the

@@ -8,9 +8,11 @@ import java.util.Map;
 /**
  * Supported languages and their script options.
  *
- * <p>The first 25 entries are exactly the languages NVIDIA Parakeet TDT 0.6B v3 can
- * recognise (verified against the model card). Everything else routes to a Whisper
- * backend in the sidecar, which is why the engine is model-agnostic.</p>
+ * <p>This table mirrors the sidecar's own registry ({@code GET /languages}) exactly: the same
+ * codes, the same script names, and the same split between Parakeet v3 (25 European
+ * languages, recognised locally on CPU or GPU) and Whisper (everything else). Keeping the
+ * two in step matters — the mod sends the chosen script name straight through to the
+ * sidecar, so a name that is not in this list produces a fallback rendering.</p>
  */
 public final class Languages {
 
@@ -25,52 +27,51 @@ public final class Languages {
     }
 
     static {
-        // ---- the 25 Parakeet v3 languages -----------------------------------
-        add("en", "English", true, "plain", "phonetic");
-        add("de", "German", true, "plain", "phonetic");
-        add("fr", "French", true, "plain", "phonetic");
-        add("es", "Spanish", true, "plain", "phonetic");
-        add("it", "Italian", true, "plain", "phonetic");
-        add("pt", "Portuguese", true, "plain", "phonetic");
-        add("nl", "Dutch", true, "plain", "phonetic");
-        add("pl", "Polish", true, "plain", "phonetic");
-        add("cs", "Czech", true, "plain", "phonetic");
-        add("sk", "Slovak", true, "plain", "phonetic");
-        add("sl", "Slovenian", true, "plain", "phonetic");
-        add("hr", "Croatian", true, "plain", "phonetic");
-        add("bg", "Bulgarian", true, "cyrillic", "romanized", "phonetic");
-        add("ru", "Russian", true, "cyrillic", "romanized", "phonetic");
-        add("uk", "Ukrainian", true, "cyrillic", "romanized", "phonetic");
-        add("el", "Greek", true, "greek", "romanized", "phonetic");
-        add("hu", "Hungarian", true, "plain", "phonetic");
-        add("ro", "Romanian", true, "plain", "phonetic");
-        add("da", "Danish", true, "plain", "phonetic");
-        add("sv", "Swedish", true, "plain", "phonetic");
-        add("fi", "Finnish", true, "plain", "phonetic");
-        add("et", "Estonian", true, "plain", "phonetic");
-        add("lv", "Latvian", true, "plain", "phonetic");
-        add("lt", "Lithuanian", true, "plain", "phonetic");
-        add("mt", "Maltese", true, "plain", "phonetic");
+        // ---- the 25 Parakeet v3 languages (fast, fully local, CPU or GPU) ----
+        add("en", "English", true, "latin", "ipa");
+        add("de", "German", true, "latin", "ipa");
+        add("es", "Spanish", true, "latin", "ipa");
+        add("fr", "French", true, "latin", "ipa");
+        add("it", "Italian", true, "latin", "ipa");
+        add("pt", "Portuguese", true, "latin", "ipa");
+        add("nl", "Dutch", true, "latin", "ipa");
+        add("pl", "Polish", true, "latin", "ipa");
+        add("cs", "Czech", true, "latin", "ipa");
+        add("sk", "Slovak", true, "latin", "ipa");
+        add("sl", "Slovene", true, "latin", "ipa");
+        add("hr", "Croatian", true, "latin", "ipa");
+        add("bg", "Bulgarian", true, "cyrillic", "ipa");
+        add("ru", "Russian", true, "cyrillic", "ipa");
+        add("uk", "Ukrainian", true, "cyrillic", "ipa");
+        add("el", "Greek", true, "greek", "ipa");
+        add("hu", "Hungarian", true, "latin", "ipa");
+        add("ro", "Romanian", true, "latin", "ipa");
+        add("da", "Danish", true, "latin", "ipa");
+        add("sv", "Swedish", true, "latin", "ipa");
+        add("fi", "Finnish", true, "latin", "ipa");
+        add("et", "Estonian", true, "latin", "ipa");
+        add("lv", "Latvian", true, "latin", "ipa");
+        add("lt", "Lithuanian", true, "latin", "ipa");
+        add("mt", "Maltese", true, "latin", "ipa");
 
-        // ---- beyond Parakeet: Whisper backend --------------------------------
-        add("ja", "Japanese", false, "hiragana", "katakana", "kanji", "romaji", "furigana", "phonetic");
-        add("zh", "Chinese", false, "simplified", "traditional", "pinyin", "phonetic");
-        add("ko", "Korean", false, "hangul", "romanized", "phonetic");
-        add("ar", "Arabic", false, "arabic", "romanized", "phonetic");
-        add("hi", "Hindi", false, "devanagari", "romanized", "phonetic");
-        add("tr", "Turkish", false, "plain", "phonetic");
-        add("vi", "Vietnamese", false, "plain", "phonetic");
-        add("th", "Thai", false, "thai", "romanized", "phonetic");
-        add("he", "Hebrew", false, "hebrew", "romanized", "phonetic");
-        add("id", "Indonesian", false, "plain", "phonetic");
-        add("fa", "Persian", false, "arabic", "romanized", "phonetic");
-        add("sr", "Serbian", false, "cyrillic", "latin", "phonetic");
+        // ---- beyond Parakeet: routed to the Whisper backend -------------------
+        add("ja", "Japanese", false, "hiragana", "katakana", "kanji", "romaji", "furigana");
+        add("zh", "Chinese (Mandarin)", false, "han", "pinyin", "latin");
+        add("ko", "Korean", false, "hangul", "romaja");
+        add("ar", "Arabic", false, "arabic", "latin");
+        add("hi", "Hindi", false, "devanagari", "latin");
+        add("tr", "Turkish", false, "latin", "ipa");
+        add("vi", "Vietnamese", false, "latin", "ipa");
+        add("th", "Thai", false, "thai", "latin");
+        add("he", "Hebrew", false, "hebrew", "latin");
+        add("id", "Indonesian", false, "latin", "ipa");
+        add("fa", "Persian", false, "arabic", "latin");
     }
 
     /** Every supported language code, in declaration order. */
     public static final List<String> ALL_CODES = List.copyOf(BY_CODE.keySet());
 
-    /** Codes sensible as a native/companion language (the common ones first). */
+    /** Codes sensible as a native/companion language, most common first. */
     public static final List<String> NATIVE_CODES = buildNativeCodes();
 
     private static List<String> buildNativeCodes() {

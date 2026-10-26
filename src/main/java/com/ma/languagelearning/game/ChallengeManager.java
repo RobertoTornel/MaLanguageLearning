@@ -115,6 +115,8 @@ public final class ChallengeManager {
     private boolean sttInFlight;
     private boolean cancelRequested;
     private boolean dropPending;
+    /** True when the last result was a skip rather than a genuine pass. */
+    private boolean skipped;
     /** Registry id of the challenge that just failed, kept until the drop runs. */
     private String failedItemKey;
 
@@ -418,7 +420,7 @@ public final class ChallengeManager {
             case WAITING_INVENTORY_CLOSE -> "Close your inventory to answer";
             case LISTENING -> recordingStarted ? "Listening…" : "Microphone unavailable";
             case EVALUATING -> "Checking…";
-            case PASSED -> "Correct!";
+            case PASSED -> skipped ? "No microphone — skipped" : "Correct!";
             case FAILED -> "Say it again";
         };
     }
@@ -435,6 +437,7 @@ public final class ChallengeManager {
     private void beginListening() {
         MllConfig cfg = MllConfig.get();
         int seconds = Math.max(1, cfg.answerSeconds);
+        skipped = false;
         remainingTicks = seconds * 20;
         recordTicks = 0;
         holdTicks = 0;
@@ -512,8 +515,10 @@ public final class ChallengeManager {
             byte[] pcm = stopCaptureQuietly();
             if (!recordingStarted) {
                 // No microphone at all: nothing to enforce, so do not punish the player.
+                // The item is deliberately NOT marked learned — they never got to answer.
                 outcome = ChallengeOutcome.SKIPPED;
                 state = State.PASSED;
+                skipped = true;
                 holdTicks = RESULT_HOLD_TICKS;
                 current = null;
                 return;
@@ -831,6 +836,8 @@ public final class ChallengeManager {
         dropPending = false;
         sttInFlight = false;
         cancelRequested = false;
+        skipped = false;
+        failedItemKey = null;
         state = State.IDLE;
     }
 }

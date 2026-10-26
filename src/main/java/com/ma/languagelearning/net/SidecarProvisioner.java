@@ -283,7 +283,9 @@ public final class SidecarProvisioner {
         } catch (Throwable t) {
             String message = describe(t);
             LOG.error("[{}] sidecar provisioning failed: {}", "malanguagelearning", message, t);
-            report(ProvisionProgress.Stage.FAILED, message, 100);
+            // The progress detail is rendered on a UI line, so it carries the headline only;
+            // the full command output stays in the log and in the exception.
+            report(ProvisionProgress.Stage.FAILED, headLine(message, 200), 100);
             throw new IllegalStateException(message, t);
         }
     }
@@ -517,8 +519,9 @@ public final class SidecarProvisioner {
             }
         }
         if (exit != 0) {
+            String output = tail(text, 1_500);
             throw new IOException("uv " + String.join(" ", args) + " exited with " + exit
-                    + ": " + tail(text, 1_500));
+                    + (output.isEmpty() ? "" : ": " + output));
         }
     }
 
@@ -673,6 +676,15 @@ public final class SidecarProvisioner {
         }
         String stripped = text.strip();
         return stripped.length() <= max ? stripped : "…" + stripped.substring(stripped.length() - max);
+    }
+
+    /** The first line of a message, capped, for one-line UI display. */
+    private static String headLine(String text, int max) {
+        if (text == null) {
+            return "";
+        }
+        String first = text.strip().split("\\R", 2)[0].strip();
+        return first.length() <= max ? first : first.substring(0, max) + "…";
     }
 
     // ---- tar/byte helpers ---------------------------------------------------
