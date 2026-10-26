@@ -206,7 +206,7 @@ public final class HttpJson {
             Thread.currentThread().interrupt();
             throw new InterruptedIOException("interrupted while calling " + url);
         } catch (IOException e) {
-            throw new IOException("cannot reach " + url + ": " + describe(e.getMessage()), e);
+            throw new IOException("cannot reach " + url + ": " + describeError(e), e);
         }
 
         int status = response.statusCode();
