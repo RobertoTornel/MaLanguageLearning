@@ -74,6 +74,11 @@ public final class ClientBootstrap {
             MllConfig cfg = MllConfig.get();
 
             ledger = new LedgerStore();
+            // Session mode means "until the game restarts", and this is that moment. Done
+            // before the first world is selected so it applies to every world in the run.
+            if ("session".equalsIgnoreCase(MllConfig.get().memoryMode)) {
+                ledger.clearSession();
+            }
             resolver = new ItemNameResolver();
             stt = new SidecarClient();
             translations = (TranslationProvider) stt;
@@ -203,6 +208,10 @@ public final class ClientBootstrap {
 
         ensureInitialised();
 
+        if (ledger != null) {
+            ledger.setWorld(currentWorldName(mc));
+        }
+
         if (challenges != null) {
             challenges.tick();
         }
@@ -218,6 +227,36 @@ public final class ClientBootstrap {
                     challenges.queue(key, word, stack);
                 }
             }
+        }
+    }
+
+    /**
+     * Name of the save the player is in, or null outside a world.
+     *
+     * <p>Uses the singleplayer save folder name so each world gets its own progress file;
+     * on a multiplayer server the server address is used instead, since that is the closest
+     * stable identity available on the client.</p>
+     */
+    private static String currentWorldName(Minecraft mc) {
+        try {
+            if (mc == null || mc.player == null) {
+                return null;
+            }
+            var server = mc.getSingleplayerServer();
+            if (server != null) {
+                return server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT)
+                        .getFileName().toString();
+            }
+            var connection = mc.getConnection();
+            if (connection != null && connection.getServerData() != null) {
+                String ip = connection.getServerData().ip;
+                if (ip != null && !ip.isBlank()) {
+                    return "server_" + ip;
+                }
+            }
+            return "unknown";
+        } catch (Throwable t) {
+            return "unknown";
         }
     }
 

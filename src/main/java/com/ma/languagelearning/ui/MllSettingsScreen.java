@@ -181,8 +181,8 @@ public final class MllSettingsScreen extends Screen {
         // How learned words are remembered.
         this.addRenderableWidget(CycleButton.<String>builder(
                         v -> Component.literal(cap(v)),
-                        cfg.memoryMode == null ? "dynamic" : cfg.memoryMode)
-                .withValues("dynamic", "permanent", "off")
+                        cfg.memoryMode == null ? "cooldown" : cfg.memoryMode)
+                .withValues("cooldown", "session", "permanent")
                 .create(x0, y, half, 20, Component.literal("Memory"),
                         (btn, value) -> {
                             cfg.memoryMode = value;
@@ -190,12 +190,21 @@ public final class MllSettingsScreen extends Screen {
                         }));
 
         this.addRenderableWidget(CycleButton.<Integer>builder(
-                        v -> Component.literal(v + " min"),
-                        cfg.memoryResetMinutes)
-                .withValues(10, 30, 60, 120, 360, 1440)
-                .create(x0 + half + gap, y, half, 20, Component.literal("Remember for"),
+                        v -> Component.literal(v == 0 ? "off" : v + "s"),
+                        cfg.memoryResetSeconds)
+                .withValues(0, 60, 120, 270, 600, 1800, 3600)
+                .create(x0 + half + gap, y, half, 20, Component.literal("Forget after"),
                         (btn, value) -> {
-                            cfg.memoryResetMinutes = value;
+                            cfg.memoryResetSeconds = value;
+                            cfg.save();
+                        }));
+
+        y += rowH;
+
+        this.addRenderableWidget(CycleButton.onOffBuilder(cfg.perWorldMemory)
+                .create(x0, y, half, 20, Component.literal("Per-world memory"),
+                        (btn, value) -> {
+                            cfg.perWorldMemory = value;
                             cfg.save();
                         }));
 

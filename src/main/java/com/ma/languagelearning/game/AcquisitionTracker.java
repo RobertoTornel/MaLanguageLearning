@@ -154,6 +154,13 @@ public final class AcquisitionTracker {
             }
             fresh.merge(key, count, Integer::sum);
             freshStacks.putIfAbsent(key, stack.copy());
+            // Any sighting of a learned item restarts its cooldown, including picking up
+            // more of something already known.
+            try {
+                ledger.markSeen(key, System.currentTimeMillis());
+            } catch (Exception e) {
+                // Never let bookkeeping break acquisition detection.
+            }
         }
 
         if (!baselineTaken) {

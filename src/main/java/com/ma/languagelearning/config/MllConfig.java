@@ -71,18 +71,22 @@ public final class MllConfig {
     /** Reject a match when the transcript is this much longer than the target word. */
     public boolean strictMatching = false;
     /**
-     * How learned words are remembered.
+     * How a learned word is remembered.
      *
      * <ul>
-     *   <li>{@code "permanent"} — once learned, never asked again (the old behaviour).</li>
-     *   <li>{@code "off"} — nothing is remembered; every pickup asks again.</li>
-     *   <li>{@code "dynamic"} — remembered, but forgotten after {@link #memoryResetMinutes}
-     *       so previously learned words come back for review.</li>
+     *   <li>{@code "cooldown"} — remembered until {@link #memoryResetSeconds} of <em>not
+     *       picking that item up</em> passes, then it is asked again. Picking it up resets
+     *       the clock, so a chest you keep visiting stays quiet while a one-off stays learned
+     *       only until you have left it alone long enough.</li>
+     *   <li>{@code "session"} — remembered until the game is restarted.</li>
+     *   <li>{@code "permanent"} — never asked again.</li>
      * </ul>
      */
-    public String memoryMode = "dynamic";
-    /** Minutes a learned word is remembered in {@code "dynamic"} mode. */
-    public int memoryResetMinutes = 30;
+    public String memoryMode = "cooldown";
+    /** Seconds of not picking an item up before it must be said again, in cooldown mode. */
+    public int memoryResetSeconds = 270;
+    /** Remember progress per world/save instead of globally. */
+    public boolean perWorldMemory = true;
     /** Ignore items whose names are shorter than this (avoids one-letter noise). */
     public int minWordLength = 2;
     /** Item registry ids that are always exempt (e.g. {@code "minecraft:stone"}). */

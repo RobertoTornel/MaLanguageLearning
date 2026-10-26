@@ -17,6 +17,20 @@ public interface LearnedLedger {
     /** Record a successful pronunciation. Returns false if it was already learned. */
     boolean markLearned(String itemKey, String word, long epochMillis);
 
+    /**
+     * Record that the player picked this item up.
+     *
+     * <p>Cooldown mode counts from the last pickup, so touching an item again restarts its
+     * quiet period. Ignored for items that are not learned yet.</p>
+     */
+    void markSeen(String itemKey, long epochMillis);
+
+    /** Select the world whose progress applies, or null when not in one. */
+    void setWorld(String name);
+
+    /** Forget everything, for session mode's "the game restarted" reset. */
+    void clearSession();
+
     /** The word recorded for this item, or null. */
     String wordOf(String itemKey);
 

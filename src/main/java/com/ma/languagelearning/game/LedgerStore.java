@@ -49,13 +49,35 @@ public final class LedgerStore implements LearnedLedger {
     private static final long SAVE_DEBOUNCE_MS = 2_000L;
 
     /** One learned word as stored on disk. */
-    private record Entry(String word, long learnedAt) {
+    /**
+     * One learned word.
+     *
+     * @param word      the spelling that was accepted
+     * @param learnedAt when it was last spoken correctly
+     * @param seenAt    when the item was last picked up; cooldown mode counts from here, so
+     *                  picking an item up again restarts its quiet period
+     */
+    private record Entry(String word, long learnedAt, long seenAt) {
     }
 
     private final Map<String, Entry> words = new LinkedHashMap<>();
 
     private boolean loaded;
     private boolean dirty;
+    /** Current world id (save folder name), or null when not in a world. */
+    private String worldName;
+    /**
+     * Words said correctly during this process.
+     *
+     * <p>Session mode is defined by the process lifetime, so it cannot be stored on disk —
+     * a file would survive the restart it is supposed to forget. This set is the truth in
+     * that mode.</p>
+     */
+    private final java.util.Set<String> sessionLearned = new java.util.HashSet<>();
+    /** Base directory for per-world files; null means the real config dir. */
+    private Path worldBaseOverride;
+    /** Path the currently loaded data came from, so a world switch can reload. */
+    private Path loadedFrom;
     private long lastSaveMs;
     private Path pathOverride;
 
@@ -67,6 +89,11 @@ public final class LedgerStore implements LearnedLedger {
         this.pathOverride = path;
     }
 
+    /** Test seam: use a non-default directory for per-world files. */
+    LedgerStore(Path worldBase, boolean perWorldOnly) {
+        this.worldBaseOverride = worldBase;
+    }
+
     // ------------------------------------------------------------------ public API
 
     @Override
@@ -75,29 +102,82 @@ public final class LedgerStore implements LearnedLedger {
             return false;
         }
         MllConfig cfg = MllConfig.get();
-        String mode = cfg.memoryMode == null ? "permanent" : cfg.memoryMode.toLowerCase(Locale.ROOT);
-        if ("off".equals(mode)) {
-            // Nothing is ever considered known, so every pickup asks again.
-            return false;
-        }
+        String mode = cfg.memoryMode == null ? "cooldown" : cfg.memoryMode.toLowerCase(Locale.ROOT);
+
         ensureLoaded();
         Entry entry = words.get(itemKey);
         if (entry == null) {
             return false;
         }
-        if ("dynamic".equals(mode)) {
-            long windowMillis = Math.max(1, cfg.memoryResetMinutes) * 60_000L;
-            long age = System.currentTimeMillis() - entry.learnedAt();
-            if (age > windowMillis) {
-                // Forgotten: drop it so the word is asked again, and so the file reflects
-                // the same thing the player is being shown.
-                words.remove(itemKey);
-                dirty = true;
-                maybeSave(System.currentTimeMillis());
+
+        switch (mode) {
+            case "permanent" -> {
+                return true;
+            }
+            case "session" -> {
+                // Only what was said since this process started counts.
+                return sessionLearned.contains(itemKey);
+            }
+            case "off" -> {
+                // Legacy value from before the three-mode system: "never remember".
                 return false;
             }
+            case "cooldown", "dynamic" -> {
+                if (cfg.memoryResetSeconds <= 0) {
+                    // A zero window means ask every time, which is what "off" used to mean.
+                    return false;
+                }
+                long windowMillis = cfg.memoryResetSeconds * 1000L;
+                long anchor = entry.seenAt() > 0 ? entry.seenAt() : entry.learnedAt();
+                if (System.currentTimeMillis() - anchor > windowMillis) {
+                    // Quiet for long enough: ask again, and make the file agree.
+                    words.remove(itemKey);
+                    dirty = true;
+                    maybeSave(System.currentTimeMillis());
+                    return false;
+                }
+                return true;
+            }
+            default -> {
+                return true;
+            }
         }
-        return true;
+    }
+
+    /**
+     * Record that the item was picked up.
+     *
+     * <p>In cooldown mode this restarts the clock, so an item you keep touching stays quiet
+     * while one you have not seen for a while is asked again.</p>
+     */
+    @Override
+    public synchronized void markSeen(String itemKey, long epochMillis) {
+        if (itemKey == null || itemKey.isBlank()) {
+            return;
+        }
+        Entry entry = words.get(itemKey);
+        if (entry == null) {
+            // Not learned yet: nothing to refresh, and adding an entry here would wrongly
+            // mark it as known.
+            return;
+        }
+        words.put(itemKey, new Entry(entry.word(), entry.learnedAt(), epochMillis));
+        dirty = true;
+        maybeSave(epochMillis);
+    }
+
+    @Override
+    public synchronized void clearSession() {
+        // Session mode forgets everything when the game starts. Only the in-memory set is
+        // authoritative, so clearing that is enough; the word list stays as a record of
+        // what was learned, which matters if the mode is changed mid-run.
+        sessionLearned.clear();
+        if (words.isEmpty()) {
+            return;
+        }
+        words.clear();
+        dirty = true;
+        writeToDisk();
     }
 
     @Override
@@ -108,17 +188,20 @@ public final class LedgerStore implements LearnedLedger {
         ensureLoaded();
         Entry previous = words.get(itemKey);
         if (previous != null) {
-            // Already learned: keep the original first-success timestamp, only refresh the
-            // recorded spelling when the old one was blank.
+            // Already known on disk. In session mode that is not enough — the word must have
+            // been said since this process started — so record it now that it has been.
+            sessionLearned.add(itemKey);
+            // Keep the original first-success timestamp; only refresh a blank spelling.
             if (previous.word() == null || previous.word().isBlank()) {
-                words.put(itemKey, new Entry(word, epochMillis));
+                words.put(itemKey, new Entry(word, epochMillis, epochMillis));
                 dirty = true;
                 maybeSave(epochMillis);
             }
             maybeSave(epochMillis);
             return false;
         }
-        words.put(itemKey, new Entry(word, epochMillis));
+        words.put(itemKey, new Entry(word, epochMillis, epochMillis));
+        sessionLearned.add(itemKey);
         dirty = true;
         maybeSave(epochMillis);
         return true;
@@ -178,8 +261,61 @@ public final class LedgerStore implements LearnedLedger {
         }
     }
 
+    /**
+     * Switch the active world.
+     *
+     * <p>Progress is per world by default: learning stone in one save should not exempt it in
+     * another, and a creative test world should not pollute a survival one. Passing a name
+     * that differs from the loaded one drops the in-memory copy and reloads from that world's
+     * file.</p>
+     */
+    @Override
+    public synchronized void setWorld(String name) {
+        String normalised = name == null || name.isBlank() ? null : name;
+        if (java.util.Objects.equals(normalised, worldName) && loaded) {
+            return;
+        }
+        // Persist whatever we have before switching, or the previous world loses progress.
+        if (loaded && dirty) {
+            writeToDisk();
+        }
+        worldName = normalised;
+        loaded = false;
+        words.clear();
+        loadedFrom = null;
+    }
+
     private Path path() {
-        return pathOverride != null ? pathOverride : MllConfig.dataDir().resolve("learned.json");
+        if (pathOverride != null) {
+            return pathOverride;
+        }
+        MllConfig cfg = MllConfig.get();
+        if (cfg.perWorldMemory && worldName != null && !worldName.isBlank()) {
+            // One file per save, under a subfolder so listings stay readable and a world
+            // name cannot escape the directory.
+            String safe = sanitise(worldName);
+            Path base = worldBaseOverride != null ? worldBaseOverride : MllConfig.dataDir();
+            return base.resolve("worlds").resolve(safe + ".json");
+        }
+        Path base = worldBaseOverride != null ? worldBaseOverride : MllConfig.dataDir();
+        return base.resolve("learned.json");
+    }
+
+    /** Reduce a world name to something safe to use as a file name. */
+    private static String sanitise(String name) {
+        StringBuilder out = new StringBuilder(name.length());
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            boolean ok = Character.isLetterOrDigit(c) || c == '-' || c == '_' || c == ' ';
+            out.append(ok ? c : '_');
+        }
+        String trimmed = out.toString().trim();
+        if (trimmed.isEmpty()) {
+            return "world";
+        }
+        // Windows rejects leading/trailing dots and spaces and these are also awkward on Linux.
+        trimmed = trimmed.replaceAll("^[. ]+", "").replaceAll("[. ]+$", "");
+        return trimmed.isEmpty() ? "world" : trimmed;
     }
 
     private void ensureLoaded() {
@@ -215,7 +351,10 @@ public final class LedgerStore implements LearnedLedger {
                 long learnedAt = record.has("learned_at") && !record.get("learned_at").isJsonNull()
                         ? record.get("learned_at").getAsLong()
                         : 0L;
-                words.put(wordEntry.getKey(), new Entry(word, learnedAt));
+                long seenAt = record.has("seen_at") && !record.get("seen_at").isJsonNull()
+                        ? record.get("seen_at").getAsLong()
+                        : learnedAt;
+                words.put(wordEntry.getKey(), new Entry(word, learnedAt, seenAt));
             }
             LOG.debug("[malanguagelearning] ledger loaded: {} words", words.size());
         } catch (Exception e) {
@@ -247,6 +386,7 @@ public final class LedgerStore implements LearnedLedger {
                 JsonObject record = new JsonObject();
                 record.addProperty("word", entry.getValue().word());
                 record.addProperty("learned_at", entry.getValue().learnedAt());
+                record.addProperty("seen_at", entry.getValue().seenAt());
                 wordsObject.add(entry.getKey(), record);
             }
 
