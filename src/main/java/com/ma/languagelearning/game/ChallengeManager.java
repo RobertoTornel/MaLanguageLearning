@@ -818,7 +818,11 @@ public final class ChallengeManager {
         }
         if (holdTicks <= 0) {
             state = State.IDLE;
-            outcome = ChallengeOutcome.CANCELLED;
+            // Preserve the real outcome (PASSED/FAILED) so callers can read it after the
+            // result screen expires. Only default to CANCELLED when nothing was decided.
+            if (outcome != ChallengeOutcome.PASSED && outcome != ChallengeOutcome.FAILED) {
+                outcome = ChallengeOutcome.CANCELLED;
+            }
             if (!queue.isEmpty()) {
                 state = State.WAITING_INVENTORY_CLOSE;
             } else if (current != null) {
@@ -948,18 +952,6 @@ public final class ChallengeManager {
         clip.start();
     }
 
-    /** True when the microphone has heard a full utterance and trailing silence. */
-    private boolean speechEnded() {
-        if (capture instanceof JavaSoundCapture javaSound) {
-            try {
-                return javaSound.speechEnded();
-            } catch (Exception e) {
-                return false;
-            }
-        }
-        return false;
-    }
-
     /** Current challenge key, for log lines that run after {@code current} was cleared. */
     private String pendingKeyForLog() {
         return current == null ? "?" : current.itemKey();
@@ -993,14 +985,15 @@ public final class ChallengeManager {
         // A pending drop is deliberately left alone here. reset() runs on cancel, on retry
         // and after an error, and the consequence of a failed word (the item hitting the
         // floor) must survive all three; otherwise a player can dodge it by tapping the
-        // retry key or reopening a container. tickResult() clears it once it has fired.
+        // retry key or reopening a container. tickResult() clears failedItemKey once the
+        // drop has fired.
         if (!dropPending) {
             dropTicks = 0;
+            failedItemKey = null;
         }
         sttInFlight = false;
         cancelRequested = false;
         skipped = false;
-        failedItemKey = null;
         state = State.IDLE;
     }
 }

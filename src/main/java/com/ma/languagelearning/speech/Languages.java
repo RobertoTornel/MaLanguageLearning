@@ -121,6 +121,7 @@ public final class Languages {
             case "pl" -> "pl_pl";
             case "cs" -> "cs_cz";
             case "sk" -> "sk_sk";
+            case "sl" -> "sl_si";
             case "tr" -> "tr_tr";
             case "ru" -> "ru_ru";
             case "uk" -> "uk_ua";
@@ -136,6 +137,7 @@ public final class Languages {
             case "th" -> "th_th";
             case "vi" -> "vi_vn";
             case "id" -> "id_id";
+            case "mt" -> "mt_mt";
             default -> "";
         };
     }

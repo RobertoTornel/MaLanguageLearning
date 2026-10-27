@@ -282,6 +282,7 @@ public final class LedgerStore implements LearnedLedger {
         worldName = normalised;
         loaded = false;
         words.clear();
+        sessionLearned.clear();
         loadedFrom = null;
     }
 
