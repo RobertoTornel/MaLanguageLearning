@@ -10,11 +10,11 @@ iconFile = "icon.png"
 description = '''
 ${mod_description}
 
-WARNING: THIS MOD DOWNLOADS A LARGE SPEECH-RECOGNITION MODEL (ABOUT 671 MB FOR THE
-INT8 PARAKEET V3 MODEL, ABOUT 2.5 GB FOR FULL PRECISION) PLUS A SMALL PYTHON RUNTIME.
-IT REQUIRES A MICROPHONE, EXPECTS ROUGHLY 1-3 GB OF SYSTEM RAM WHILE ACTIVE, AND CAN
-USE EITHER THE CPU OR A CUDA GPU (TOGGLABLE). IT HAS A NOTICEABLE PERFORMANCE IMPACT.
-NOTHING IS DOWNLOADED UNTIL YOU ACCEPT THE IN-GAME WARNING.
+WARNING: This mod downloads a large speech-recognition model (~800 MB; up to ~2.5 GB more
+for Japanese, Chinese or Korean) plus a small Python runtime. It requires a microphone,
+expects roughly 1-3 GB of system RAM while active, can use CPU or a CUDA GPU (togglable),
+and has a noticeable performance impact. Nothing is downloaded until you accept the
+in-game warning.
 '''
 
 [[dependencies.${mod_id}]]
