@@ -111,8 +111,12 @@ public final class SpeechMatcher {
         }
 
         // Fuzzy matching only where a mis-hearing is plausible but harmless: long enough to
-        // have redundancy, and not CJK (where one glyph changes the whole word).
-        if (want.length() >= 4 && got.length() >= 4 && !containsCjk(want) && !containsCjk(got)) {
+        // have redundancy, and not kanji/ideographs (where one glyph changes the whole word).
+        // Kana and hangul are phonetic — pronunciation slips are expected — so they keep
+        // fuzzy tolerance. Kanji is logographic — each glyph is a distinct word — so it
+        // stays exact-match-only.
+        if (want.length() >= 4 && got.length() >= 4
+                && !containsIdeographs(want) && !containsIdeographs(got)) {
             int distance = levenshtein(want, got);
             int tolerance = Math.max(1, (int) Math.floor(want.length() * 0.25));
             return distance <= tolerance;
@@ -179,6 +183,26 @@ public final class SpeechMatcher {
                     || block == Character.UnicodeBlock.HANGUL_SYLLABLES
                     || block == Character.UnicodeBlock.HANGUL_JAMO
                     || block == Character.UnicodeBlock.HALFWIDTH_AND_FULLWIDTH_FORMS) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** True when the text contains kanji/ideographs (logographic: one glyph = one word).
+     *  Kana and hangul are phonetic and return false here — they keep fuzzy tolerance.
+     */
+    public static boolean containsIdeographs(String s) {
+        if (s == null) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); ) {
+            int cp = s.codePointAt(i);
+            i += Character.charCount(cp);
+            Character.UnicodeBlock block = Character.UnicodeBlock.of(cp);
+            if (block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS
+                    || block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A
+                    || block == Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS) {
                 return true;
             }
         }

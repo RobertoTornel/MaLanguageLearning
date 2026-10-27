@@ -36,6 +36,12 @@ public final class ChallengeSounds {
         play(SoundEvents.AMETHYST_BLOCK_BREAK, FAIL_VOLUME, 0.8f);
     }
 
+    /** Play a short beep when TTS is unavailable (e.g. no voice for this language).
+     *  Safe to call from any thread. */
+    public static void beep() {
+        play(SoundEvents.AMETHYST_BLOCK_HIT, 0.6f, 2.0f);
+    }
+
     private static void play(SoundEvent sound, float volume, float pitch) {
         try {
             MllConfig cfg = MllConfig.get();

@@ -95,6 +95,13 @@ public final class ChallengeManager {
     /** Extra ticks the failed result stays on screen *after* the drop has run. */
     private static final int RESULT_TAIL_TICKS = 20;
 
+    /** Minimum peak amplitude (16-bit full scale = 32767) below which a capture is treated
+     *  as silence rather than a spoken answer. Silence must not drop the item. */
+    private static final int SILENCE_PEAK_THRESHOLD = 500;
+    /** Minimum capture length (~1 second at 16 kHz 16-bit mono) below which the take is
+     *  treated as "no answer" rather than a wrong answer. */
+    private static final int MIN_CAPTURE_BYTES = 32_000;
+
     private final LearnedLedger ledger;
     private final ItemNameResolver resolver;
     private final SttClient stt;
@@ -141,6 +148,9 @@ public final class ChallengeManager {
 
     /** Copy of the stack being challenged, kept so the HUD can draw its icon. */
     private ItemStack currentStack = ItemStack.EMPTY;
+
+    /** Currently playing TTS clip, so rapid speakAsync calls don't overlap or leak lines. */
+    private Clip activeTtsClip;
 
     /** Stack copies keyed by registry id, so the HUD can draw an icon per challenge. */
     private final Map<String, ItemStack> pendingStacks = new HashMap<>();
@@ -428,6 +438,12 @@ public final class ChallengeManager {
         return state != State.IDLE;
     }
 
+    /** True when no challenges are queued. Used by the retry keybind so idle players
+     *  don't accidentally launch a new challenge. */
+    public boolean queueIsEmpty() {
+        return queue.isEmpty() && current == null;
+    }
+
     /** The most recent resolved outcome. */
     /** True when the last result was a skip rather than a real pass (no microphone). */
     public boolean isSkipped() {
@@ -533,7 +549,7 @@ public final class ChallengeManager {
             return;
         }
         try {
-            recordingStarted = capture.start();
+            recordingStarted = capture.start(seconds);
             if (!recordingStarted) {
                 LOG.warn("[malanguagelearning] microphone unavailable: {}", capture.lastError());
             }
@@ -636,11 +652,30 @@ public final class ChallengeManager {
                 current = null;
                 return;
             }
-            LOG.debug("[malanguagelearning] capture ended for {}: {} bytes",
-                    pendingKeyForLog(), pcm == null ? -1 : pcm.length);
-            if (pcm == null || pcm.length < 3200) {
-                // Under ~100 ms of audio: treat as no answer.
-                resolveFailure(-1f);
+
+            int peak = 0;
+            if (capture != null) {
+                try {
+                    peak = capture.peakAmplitude();
+                } catch (Exception ignored) {
+                }
+            }
+            LOG.debug("[malanguagelearning] capture ended for {}: {} bytes peak={}",
+                    pendingKeyForLog(), pcm == null ? -1 : pcm.length, peak);
+
+            // Silence or near-silence is NOT a wrong answer — the player said nothing,
+            // so there is nothing to mark wrong. Treat it as a skip: no drop, no failure
+            // mark, item stays in inventory and can be challenged again later.
+            boolean isSilent = peak <= SILENCE_PEAK_THRESHOLD;
+            boolean tooShort = pcm == null || pcm.length < MIN_CAPTURE_BYTES;
+            if (isSilent || tooShort) {
+                LOG.debug("[malanguagelearning] no usable audio for {} (peak={}, bytes={}) — skipping, not failing",
+                        pendingKeyForLog(), peak, pcm == null ? -1 : pcm.length);
+                outcome = ChallengeOutcome.SKIPPED;
+                state = State.PASSED;
+                skipped = true;
+                holdTicks = RESULT_HOLD_TICKS;
+                current = null;
                 return;
             }
             submitTranscription(pcm);
@@ -712,12 +747,23 @@ public final class ChallengeManager {
         boolean textMatches = SpeechMatcher.matches(
                 pending.word(), result.text(), alternatives, cfg.targetLanguage);
 
-        // Confidence is a second, independent gate. It is deliberately not the only check:
-        // correct short words routinely score well under 0.9, so requiring a high number
-        // here would punish accurate players. It exists to reject a bare guess that happens
-        // to land within edit distance.
-        float minConfidence = Math.max(0f, Math.min(1f, cfg.minConfidence));
-        boolean confidentEnough = result.confidence() <= 0f || result.confidence() >= minConfidence;
+        // Confidence is a coarse second gate: the exact word match (Levenshtein tolerance +
+        // alternatives) does the real discrimination. Confidence scales are not comparable
+        // across backends (parakeet logprob vs Whisper avg_logprob), so Whisper-backed
+        // results get a lower threshold.
+        float minConfidence = cfg.minConfidence;
+        boolean confidentEnough;
+        if (minConfidence < 0f) {
+            // Gate disabled: text match alone decides.
+            confidentEnough = true;
+        } else {
+            minConfidence = Math.max(0f, Math.min(1f, minConfidence));
+            float threshold = result.model() != null && result.model().contains("whisper")
+                    ? minConfidence * 0.7f
+                    : minConfidence;
+            // Only bypass for unreported confidence (< 0), not for a reported zero.
+            confidentEnough = result.confidence() < 0f || result.confidence() >= threshold;
+        }
         boolean ok = textMatches && confidentEnough;
 
         LOG.debug("[malanguagelearning] heard '{}' (conf {}) for '{}' -> {} (text={}, confOk={})",
@@ -842,7 +888,7 @@ public final class ChallengeManager {
     private void dropHeldItem() {
         try {
             Minecraft mc = Minecraft.getInstance();
-            if (mc == null || mc.player == null || mc.gameMode == null) {
+            if (mc == null || mc.player == null || mc.gameMode == null || mc.level == null) {
                 return;
             }
             LocalPlayer player = mc.player;
@@ -850,13 +896,19 @@ public final class ChallengeManager {
             // open their inventory while the result is on screen, and the consequence is
             // owed either way. Dropping through the open inventory menu is the safer of
             // the two paths, because container id 0 is the same menu in both cases.
+            // mc.level != null gates drops to in-world play: no consequence in menus.
 
             MllConfig cfg = MllConfig.get();
             if (!cfg.dropOnFailure) {
                 return;
             }
 
-            int menuSlot = findMenuSlot(player, failedItemKey);
+            // Prefer the exact challenged stack's slot (captured at queue time). If that
+            // slot no longer holds the item (split/merge/move), fall back to scanning.
+            int menuSlot = slotOfCurrent(player);
+            if (menuSlot < 0) {
+                menuSlot = findMenuSlot(player, failedItemKey);
+            }
             if (menuSlot < 0) {
                 LOG.info("[malanguagelearning] nothing to drop: {} is no longer carried", failedItemKey);
                 return;
@@ -872,6 +924,30 @@ public final class ChallengeManager {
     }
 
     /**
+     * Try the slot recorded when the challenge was queued. Returns the menu slot if that
+     * inventory slot still holds a stack with the challenged item key, otherwise -1.
+     */
+    private int slotOfCurrent(LocalPlayer player) {
+        if (current == null || current.inventorySlot() < 0) {
+            return -1;
+        }
+        try {
+            var inventory = player.getInventory();
+            ItemStack candidate = inventory.getItem(current.inventorySlot());
+            if (candidate == null || candidate.isEmpty()) {
+                return -1;
+            }
+            if (failedItemKey != null && failedItemKey.equals(resolver.keyFor(candidate))) {
+                return current.inventorySlot() >= 9
+                        ? current.inventorySlot()
+                        : current.inventorySlot() + InventoryMenu.USE_ROW_SLOT_START;
+            }
+        } catch (Exception ignored) {
+        }
+        return -1;
+    }
+
+    /**
      * Locate the stack for {@code itemKey} in the inventory and translate its index into the
      * {@link InventoryMenu} slot layout.
      *
@@ -884,6 +960,7 @@ public final class ChallengeManager {
             var inventory = player.getInventory();
 
             if (itemKey != null) {
+                // Main grid + hotbar (inventory slots 0-35).
                 for (int invSlot = 0; invSlot < 36; invSlot++) {
                     ItemStack candidate = inventory.getItem(invSlot);
                     if (candidate == null || candidate.isEmpty()) {
@@ -892,6 +969,22 @@ public final class ChallengeManager {
                     if (itemKey.equals(resolver.keyFor(candidate))) {
                         return invSlot >= 9 ? invSlot : invSlot + InventoryMenu.USE_ROW_SLOT_START;
                     }
+                }
+                // Armor slots (inventory 5-8 map to menu slots 5-8).
+                for (int invSlot = 5; invSlot <= 8; invSlot++) {
+                    ItemStack candidate = inventory.getItem(invSlot);
+                    if (candidate == null || candidate.isEmpty()) {
+                        continue;
+                    }
+                    if (itemKey.equals(resolver.keyFor(candidate))) {
+                        return invSlot;
+                    }
+                }
+                // Offhand (inventory slot 45 maps to menu slot 45).
+                ItemStack offhand = inventory.getItem(45);
+                if (offhand != null && !offhand.isEmpty()
+                        && itemKey.equals(resolver.keyFor(offhand))) {
+                    return 45;
                 }
             }
 
@@ -920,7 +1013,10 @@ public final class ChallengeManager {
             try {
                 byte[] wav = translations.synthesize(word, language);
                 if (wav == null || wav.length == 0) {
-                    LOG.debug("[malanguagelearning] no TTS audio for '{}'", word);
+                    // TTS unavailable (e.g. no voice for this language): play a beep so the
+                    // player still hears the failure prompt instead of silence.
+                    LOG.debug("[malanguagelearning] no TTS audio for '{}', playing beep", word);
+                    ChallengeSounds.beep();
                     return;
                 }
                 playWav(wav);
@@ -936,7 +1032,19 @@ public final class ChallengeManager {
         }
     }
 
-    private static void playWav(byte[] wav) throws Exception {
+    private void playWav(byte[] wav) throws Exception {
+        // Stop and close any previously playing TTS clip so rapid speakAsync calls don't
+        // overlap or exhaust mixer lines.
+        Clip previous = activeTtsClip;
+        if (previous != null) {
+            try {
+                previous.stop();
+                previous.close();
+            } catch (Exception ignored) {
+            }
+            activeTtsClip = null;
+        }
+
         AudioInputStream stream = AudioSystem.getAudioInputStream(new ByteArrayInputStream(wav));
         AudioFormat format = stream.getFormat();
         Clip clip = AudioSystem.getClip();
@@ -946,8 +1054,12 @@ public final class ChallengeManager {
                     clip.close();
                 } catch (Exception ignored) {
                 }
+                if (activeTtsClip == clip) {
+                    activeTtsClip = null;
+                }
             }
         });
+        activeTtsClip = clip;
         clip.open(format, wav, 0, wav.length);
         clip.start();
     }
@@ -974,7 +1086,7 @@ public final class ChallengeManager {
         return pcm;
     }
 
-    private void reset() {
+    public void reset() {
         stopCaptureQuietly();
         current = null;
         queue.clear();

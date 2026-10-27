@@ -9,11 +9,14 @@ package com.ma.languagelearning.audio;
  */
 public interface AudioCapture {
 
-    /** Begin capturing. Returns false when no microphone is available. */
-    boolean start();
+    /** Begin capturing for {@code maxSeconds}. Returns false when no microphone is available. */
+    boolean start(int maxSeconds);
 
     /** True while a recording is in progress. */
     boolean isRecording();
+
+    /** Peak amplitude of the last capture (16-bit full scale = 32767), or 0 if unknown. */
+    int peakAmplitude();
 
     /** Stop capturing and return the recorded PCM (may be shorter than the requested window). */
     byte[] stop();

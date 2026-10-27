@@ -85,7 +85,15 @@ public final class ChallengeOverlay {
                 + 10;
 
         int x = (screenW - panelW) / 2;
-        int y = (int) (screenH * 0.30);
+        // Place the panel in the upper-middle so it never covers the crosshair (screen center).
+        // Clamp: bottom edge must stay above screenH/2.
+        int y = (int) (screenH * 0.18);
+        if (y + panelH > screenH / 2) {
+            y = screenH / 2 - panelH;
+        }
+        if (y < 4) {
+            y = 4;
+        }
 
         // ---- result tint ----------------------------------------------------
         // On a pass the whole panel goes green for a beat, which reads instantly even
@@ -140,9 +148,13 @@ public final class ChallengeOverlay {
         }
 
         // ---- live status ----------------------------------------------------
+        // Drawn inside the panel so it's always in the player's focal area.
         String status = mgr.statusText();
         if (status != null && !status.isBlank()) {
-            g.centeredText(font, status, cx, y + panelH + 6, 0xFFCFCFCF);
+            int statusY = cy + smallHeight + 4;
+            if (statusY < y + panelH - 4) {
+                g.centeredText(font, status, cx, statusY, 0xFFCFCFCF);
+            }
         }
     }
 

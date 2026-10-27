@@ -18,7 +18,7 @@ public final class KeyMappings {
     public static final KeyMapping OPEN_SETTINGS = new KeyMapping(
             "key.malanguagelearning.settings",
             InputConstants.Type.KEYBOARD,
-            InputConstants.KEY_L,
+            0,
             CATEGORY);
 
     public static final KeyMapping RETRY_WORD = new KeyMapping(
@@ -43,7 +43,7 @@ public final class KeyMappings {
         }
         while (RETRY_WORD.consumeClick()) {
             var mgr = ClientBootstrap.challenges();
-            if (mgr != null) {
+            if (mgr != null && (mgr.isActive() || !mgr.queueIsEmpty())) {
                 mgr.retry();
             }
         }

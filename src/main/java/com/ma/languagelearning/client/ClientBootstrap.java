@@ -43,6 +43,8 @@ public final class ClientBootstrap {
     private static AcquisitionTracker tracker;
     private static SidecarProvisioner provisioner;
     private static boolean initialised;
+    /** True when the player was in a world on the previous tick, used to detect world leave. */
+    private static boolean wasInWorld;
     /** Ticks elapsed since the client starting; paces the automatic install kick-off. */
     private static int startupTicks;
     /** How long to wait after startup before provisioning, so the menu draws first. */
@@ -60,6 +62,21 @@ public final class ClientBootstrap {
 
         NeoForge.EVENT_BUS.addListener(ClientBootstrap::onClientTick);
         NeoForge.EVENT_BUS.addListener(ClientBootstrap::onScreenClosing);
+
+        // Shutdown hook: stop the sidecar process when the game closes so models unload
+        // and GPU VRAM is released. Without this the Python sidecar becomes an orphaned
+        // process that keeps running (and consuming RAM/VRAM) after Minecraft exits.
+        Runtime.getRuntime()
+                .addShutdownHook(
+                        new Thread(
+                                () -> {
+                                    try {
+                                        provisioner().stopSidecar();
+                                    } catch (Exception ignored) {
+                                        // Best effort; the JVM is exiting anyway.
+                                    }
+                                },
+                                "MaLanguageLearning-Shutdown"));
     }
 
     /**
@@ -201,6 +218,20 @@ public final class ClientBootstrap {
         // thing a player must be able to reach from the title screen, and it used to sit
         // behind a `player == null` return, so the key did nothing outside a world.
         KeyMappings.poll();
+
+        // Detect world leave: reset the challenge manager so queued challenges, cooldown
+        // state, and the current stack don't leak into the next world. LedgerStore handles
+        // per-world progress isolation via setWorld(), but ChallengeManager has no world
+        // concept of its own.
+        if (wasInWorld && mc.player == null) {
+            if (challenges != null) {
+                challenges.reset();
+            }
+            if (tracker != null) {
+                tracker.reset();
+            }
+        }
+        wasInWorld = mc.player != null;
 
         if (mc.player == null) {
             return;

@@ -22,7 +22,6 @@ public final class JavaSoundCapture implements AudioCapture {
     private static final int SAMPLE_BITS = 16;
     private static final int CHANNELS = 1;
     private static final int MAX_SECONDS = 20;
-    /** Amplitude above which a chunk counts as speech (16-bit full scale is 32767). */
     private final AudioFormat format = new AudioFormat(SAMPLE_RATE, SAMPLE_BITS, CHANNELS, true, false);
 
     private volatile TargetDataLine line;
@@ -30,19 +29,43 @@ public final class JavaSoundCapture implements AudioCapture {
     private volatile ByteArrayOutputStream buffer;
     private volatile boolean recording;
     private volatile String lastError;
+    /** Max recording seconds for the current capture, set by start(). */
+    private volatile int maxSeconds = MAX_SECONDS;
+    /** Peak amplitude of the last capture (16-bit full scale = 32767). */
+    private volatile int peakAmplitude;
 
     @Override
-    public boolean start() {
+    public boolean start(int maxSeconds) {
         if (recording) {
             return true;
         }
+        this.maxSeconds = Math.max(1, Math.min(maxSeconds, MAX_SECONDS));
         lastError = null;
-        buffer = new ByteArrayOutputStream(SAMPLE_RATE == 0 ? 8192 : 16_000 * 2 * 6);
+        buffer = new ByteArrayOutputStream((int) (SAMPLE_RATE * SAMPLE_BITS / 8 * CHANNELS * this.maxSeconds));
         try {
             DataLine.Info info = new DataLine.Info(TargetDataLine.class, format);
             if (!AudioSystem.isLineSupported(info)) {
-                lastError = "no microphone supporting 16kHz mono PCM";
-                return false;
+                // The requested 16 kHz format may not be natively supported by the default
+                // mixer (e.g. 48 kHz-only Windows devices, some Linux/PipeWire setups). Try
+                // opening anyway: the sidecar resamples to 16 kHz, so any PCM rate works.
+                try {
+                    TargetDataLine newLine = (TargetDataLine) AudioSystem.getLine(info);
+                    newLine.open(format);
+                    newLine.start();
+                    this.line = newLine;
+                    this.recording = true;
+
+                    Thread t = new Thread(this::pump, "MaLanguageLearning-Mic");
+                    t.setDaemon(true);
+                    this.worker = t;
+                    t.start();
+                    return true;
+                } catch (Exception fallbackFailed) {
+                    lastError = fallbackFailed.getClass().getSimpleName() + ": " + fallbackFailed.getMessage();
+                    MaLanguageLearning.LOGGER.warn("[{}] microphone unavailable: {}", MaLanguageLearning.MODID, lastError);
+                    cleanup();
+                    return false;
+                }
             }
             TargetDataLine newLine = (TargetDataLine) AudioSystem.getLine(info);
             newLine.open(format);
@@ -65,7 +88,7 @@ public final class JavaSoundCapture implements AudioCapture {
 
     private void pump() {
         byte[] chunk = new byte[4096];
-        int maxBytes = (int) (SAMPLE_RATE * (SAMPLE_BITS / 8) * CHANNELS * MAX_SECONDS);
+        int maxBytes = (int) (SAMPLE_RATE * (SAMPLE_BITS / 8) * CHANNELS * maxSeconds);
         try {
             TargetDataLine l = this.line;
             while (recording && l != null && l.isOpen()) {
@@ -85,6 +108,10 @@ public final class JavaSoundCapture implements AudioCapture {
                     break;
                 }
                 b.write(chunk, 0, read);
+                int peak = peakOf(chunk, read);
+                if (peak > peakAmplitude) {
+                    peakAmplitude = peak;
+                }
             }
         } catch (Exception e) {
             if (recording) {
@@ -93,6 +120,11 @@ public final class JavaSoundCapture implements AudioCapture {
         } finally {
             recording = false;
         }
+    }
+
+    @Override
+    public int peakAmplitude() {
+        return peakAmplitude;
     }
 
     @Override
@@ -170,5 +202,18 @@ public final class JavaSoundCapture implements AudioCapture {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    /** Peak amplitude of a 16-bit little-endian PCM buffer. */
+    private static int peakOf(byte[] data, int length) {
+        int peak = 0;
+        for (int i = 0; i + 1 < length; i += 2) {
+            int sample = (short) ((data[i] & 0xFF) | (data[i + 1] << 8));
+            int magnitude = sample < 0 ? -sample : sample;
+            if (magnitude > peak) {
+                peak = magnitude;
+            }
+        }
+        return peak;
     }
 }

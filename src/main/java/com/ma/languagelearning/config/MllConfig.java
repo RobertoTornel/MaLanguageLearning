@@ -60,16 +60,17 @@ public final class MllConfig {
      */
     public int itemCooldownSeconds = 90;
     /**
-     * Minimum speech-recognition confidence for a pass, 0..1.
+     * Minimum speech-recognition confidence for a pass, 0..1, or {@code -1} to skip the
+     *  confidence gate entirely (text match alone decides).
      *
      * <p>Measured on real parakeet-v3 output, a correctly spoken short word lands around
      * 0.4-0.9 depending on length and clarity — "dirt" scored 0.40 while "apple" scored
-     * 0.99. A blanket 0.92 therefore rejects most honest answers, so the default is
-     * lenient and the exact word match does the real work. Raise it for stricter marking.</p>
+     * 0.99. A blanket 0.92 therefore rejects most honest answers. The default is lenient
+     * because the exact word match (Levenshtein tolerance + alternatives) does the real
+     * discrimination; confidence is only a coarse second gate. Raise it for stricter
+     * marking, or set to -1 to disable the gate.</p>
      */
-    public float minConfidence = 0.55f;
-    /** Reject a match when the transcript is this much longer than the target word. */
-    public boolean strictMatching = false;
+    public float minConfidence = 0.25f;
     /**
      * How a learned word is remembered.
      *
