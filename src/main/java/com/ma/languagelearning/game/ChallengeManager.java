@@ -151,6 +151,8 @@ public final class ChallengeManager {
 
     /** Currently playing TTS clip, so rapid speakAsync calls don't overlap or leak lines. */
     private Clip activeTtsClip;
+    /** Last microphone error message, shown on the overlay when capture fails. */
+    private String micError;
 
     /** Stack copies keyed by registry id, so the HUD can draw an icon per challenge. */
     private final Map<String, ItemStack> pendingStacks = new HashMap<>();
@@ -506,7 +508,9 @@ public final class ChallengeManager {
         return switch (state) {
             case IDLE -> "";
             case WAITING_INVENTORY_CLOSE -> "Close your inventory to answer";
-            case LISTENING -> recordingStarted ? "Listening…" : "Microphone unavailable";
+            case LISTENING -> recordingStarted ? "Listening…"
+                    : micError != null ? "Microphone unavailable: " + micError
+                    : "Microphone unavailable";
             case EVALUATING -> evaluatingTicks > 120
                     // First use of a language loads its model; Japanese/Chinese/Korean need
                     // Whisper, which is a ~1.5 GB download on the very first attempt. Saying
@@ -543,19 +547,24 @@ public final class ChallengeManager {
         cancelRequested = false;
         state = State.LISTENING;
 
+        micError = null;
         recordingStarted = false;
         if (capture == null) {
             LOG.warn("[malanguagelearning] no audio capture available");
+            micError = "No audio capture device available";
             return;
         }
         try {
             recordingStarted = capture.start(seconds);
             if (!recordingStarted) {
                 LOG.warn("[malanguagelearning] microphone unavailable: {}", capture.lastError());
+                micError = capture.lastError() == null ? "Microphone unavailable"
+                        : capture.lastError();
             }
         } catch (Exception e) {
             LOG.error("[malanguagelearning] microphone start failed", e);
             recordingStarted = false;
+            micError = e.getClass().getSimpleName() + ": " + e.getMessage();
         }
 
         // Announce the word up front when the player asked for it.
@@ -623,15 +632,13 @@ public final class ChallengeManager {
             }
         }
 
-        // Always let the full answer window run. Ending the take as soon as a pause was
-        // heard cut people off mid-attempt, so a short pause looked like a failed answer.
-        // The remaining-timer check below is what closes the window.
-
-        // The answer window is authoritative: the player gets all of answerSeconds, and only
-        // the timer closes it. The capture ending on its own is not a reason to stop, because
-        // a brief pause in the middle of a word would otherwise end the attempt far too soon.
+        // End the take when the timer runs out, OR when the microphone hears speech and
+        // then a run of silence — meaning the player has finished saying the word. This way
+        // a one-second answer doesn't force the player to wait out the full window, and
+        // silence isn't punished as a wrong answer.
         boolean timedOut = remainingTicks <= 0;
-        if (timedOut) {
+        boolean speechFinished = recordingStarted && capture != null && capture.speechEnded();
+        if (timedOut || speechFinished) {
             // Read the flag BEFORE stopping: stopCaptureQuietly used to clear it, which made
             // every completed answer look like "no microphone" and skipped the challenge
             // silently. That is why nothing ever turned green or dropped an item.
@@ -1106,6 +1113,7 @@ public final class ChallengeManager {
         sttInFlight = false;
         cancelRequested = false;
         skipped = false;
+        micError = null;
         state = State.IDLE;
     }
 }

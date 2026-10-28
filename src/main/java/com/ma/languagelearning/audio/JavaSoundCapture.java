@@ -22,6 +22,10 @@ public final class JavaSoundCapture implements AudioCapture {
     private static final int SAMPLE_BITS = 16;
     private static final int CHANNELS = 1;
     private static final int MAX_SECONDS = 20;
+    /** Amplitude above which a chunk counts as speech (16-bit full scale is 32767). */
+    private static final int SPEECH_THRESHOLD = 900;
+    /** Seconds of trailing quiet that end a take. */
+    private static final float SILENCE_SECONDS = 1.0f;
     private final AudioFormat format = new AudioFormat(SAMPLE_RATE, SAMPLE_BITS, CHANNELS, true, false);
 
     private volatile TargetDataLine line;
@@ -33,6 +37,12 @@ public final class JavaSoundCapture implements AudioCapture {
     private volatile int maxSeconds = MAX_SECONDS;
     /** Peak amplitude of the last capture (16-bit full scale = 32767). */
     private volatile int peakAmplitude;
+    /**
+     * Set by the pump thread once it has heard speech and then a run of silence, meaning
+     * the player has finished saying the word. ChallengeManager checks this to stop early
+     * instead of waiting out the full answer window.
+     */
+    private volatile boolean speechEnded;
 
     @Override
     public boolean start(int maxSeconds) {
@@ -89,6 +99,11 @@ public final class JavaSoundCapture implements AudioCapture {
     private void pump() {
         byte[] chunk = new byte[4096];
         int maxBytes = (int) (SAMPLE_RATE * (SAMPLE_BITS / 8) * CHANNELS * maxSeconds);
+        // Voice activity: once we've heard speech and then ~1s of quiet, the player has
+        // finished saying the word. Stop early so the answer is checked right away instead
+        // of waiting out the full answer window.
+        boolean heardSpeech = false;
+        int quietChunks = 0;
         try {
             TargetDataLine l = this.line;
             while (recording && l != null && l.isOpen()) {
@@ -112,6 +127,16 @@ public final class JavaSoundCapture implements AudioCapture {
                 if (peak > peakAmplitude) {
                     peakAmplitude = peak;
                 }
+                if (peak > SPEECH_THRESHOLD) {
+                    heardSpeech = true;
+                    quietChunks = 0;
+                } else if (heardSpeech) {
+                    quietChunks++;
+                    if (quietChunks * chunk.length >= (int) (SAMPLE_RATE * (SAMPLE_BITS / 8) * CHANNELS * SILENCE_SECONDS)) {
+                        speechEnded = true;
+                        break;
+                    }
+                }
             }
         } catch (Exception e) {
             if (recording) {
@@ -120,6 +145,11 @@ public final class JavaSoundCapture implements AudioCapture {
         } finally {
             recording = false;
         }
+    }
+
+    /** True once speech was heard and then followed by enough silence to stop. */
+    public boolean speechEnded() {
+        return speechEnded;
     }
 
     @Override

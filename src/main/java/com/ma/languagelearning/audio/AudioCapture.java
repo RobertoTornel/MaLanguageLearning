@@ -18,6 +18,9 @@ public interface AudioCapture {
     /** Peak amplitude of the last capture (16-bit full scale = 32767), or 0 if unknown. */
     int peakAmplitude();
 
+    /** True once speech was heard and then followed by enough silence to stop. */
+    boolean speechEnded();
+
     /** Stop capturing and return the recorded PCM (may be shorter than the requested window). */
     byte[] stop();
 

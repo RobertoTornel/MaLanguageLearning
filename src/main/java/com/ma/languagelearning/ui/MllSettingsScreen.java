@@ -223,6 +223,9 @@ public final class MllSettingsScreen extends Screen {
                 + "  ·  second: " + cap(cfg.secondaryScript)
                 + "  ·  " + cap(cfg.inferenceDevice);
         g.centeredText(this.font, hint, this.width / 2, 24, 0xFF9A9AA8);
+        g.centeredText(this.font, "Open settings: keybind (unbound by default — set in Controls screen)",
+                this.width / 2, 40, 0xFF8A8A9A);
+        g.centeredText(this.font, "Retry word: R keybind (rebindable)", this.width / 2, 52, 0xFF8A8A9A);
     }
 
     /** Rebuild the widget list after a language change invalidates the script options. */
